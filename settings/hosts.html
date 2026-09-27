@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="./hosts.css">
-    <title>Servers</title>
+    <title>Environments settings</title>
   </head>
   <body>
     <main class="hosts">
@@ -20,6 +20,21 @@
         <label>Folder on the server <input name="remotePath" required placeholder="/srv/project"></label>
         <button id="save" type="button">Add or update server</button>
         <output id="status" class="hosts__status"></output>
+      </form>
+      <h1 class="section">Containers</h1>
+      <p class="hint">Used by the Container and Container on a server environments and by capsule checks. The image must already exist (it is never pulled) and contain python3; the container gets a read-only root, no capabilities, no network unless the launcher allows it, and these limits.</p>
+      <form id="containers" class="hosts__form" novalidate>
+        <label>Engine here <select name="engine"><option value="auto">Automatic (Docker, then Podman)</option><option value="docker">Docker</option><option value="podman">Podman</option></select></label>
+        <label>Engine on servers <select name="remoteEngine"><option value="podman">Podman</option><option value="docker">Docker</option></select></label>
+        <label>Image <input name="image" maxlength="255" placeholder="python:3.12-slim"></label>
+        <label>CPUs <input name="cpus" inputmode="decimal" placeholder="2"></label>
+        <label>Memory, MB <input name="memoryMb" inputmode="numeric" placeholder="2048"></label>
+        <label>Processes <input name="pids" inputmode="numeric" placeholder="512"></label>
+        <label class="wide">Check command (capsule checks, /bin/sh -c in /workspace) <input name="checkCommand" maxlength="2000" placeholder="npm test"></label>
+        <label>Check time limit, s <input name="checkTimeoutSec" inputmode="numeric" placeholder="600"></label>
+        <button id="save-containers" type="button">Save containers</button>
+        <button id="check-containers" type="button">Check engine and image</button>
+        <output id="containers-status" class="hosts__status"></output>
       </form>
     </main>
     <script src="canvastty-plugin://host/sdk.js"></script>

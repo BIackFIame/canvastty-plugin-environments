@@ -7,9 +7,9 @@ function serve({ methods, notifications = {}, onInitialize }) {
   let nextId = 1;
   const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}
 `);
-  const callHost = (method, params) => new Promise((resolve2, reject) => {
+  const callHost = (method, params) => new Promise((resolve3, reject) => {
     const id = nextId++;
-    pending.set(id, { resolve: resolve2, reject });
+    pending.set(id, { resolve: resolve3, reject });
     send({ id, method, params });
   });
   const log = (level, message) => send({ method: "log", params: { level, message: String(message).slice(0, 500) } });
@@ -48,14 +48,18 @@ function serve({ methods, notifications = {}, onInitialize }) {
   }).on("close", () => process.exit(0));
 }
 
-// src/results.mjs
-import { resolve, sep } from "node:path";
+// src/capsules.mjs
+import { randomUUID } from "node:crypto";
+import { spawn as spawn3 } from "node:child_process";
+import { mkdirSync as mkdirSync2, readdirSync, readFileSync, statSync as statSync2 } from "node:fs";
+import { mkdir, rm as rm2, rename, writeFile as writeFile2 } from "node:fs/promises";
+import { join as join3, resolve, sep } from "node:path";
 
 // src/collect.mjs
-import { execFile, spawn } from "node:child_process";
+import { execFile as execFile2, spawn as spawn2 } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join as join2 } from "node:path";
 
 // src/credentials.mjs
 var CREDENTIAL_NAMES = /* @__PURE__ */ new Set([
@@ -100,6 +104,338 @@ function isCredentialPath(path) {
   if (/^id_[a-z0-9_]+$/u.test(name)) return true;
   if (/(^|[._-])secrets?(\.|$)/u.test(name)) return true;
   return CREDENTIAL_DIRS.some((dir) => `/${lower}`.includes(dir));
+}
+
+// src/engine.mjs
+import { execFile, spawn } from "node:child_process";
+import { mkdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
+
+// src/bootstrap.mjs
+var BOOTSTRAP = String.raw`
+import os, sys, json, stat, signal, tempfile
+ENV = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/tmp', 'TERM': 'xterm-256color', 'LANG': 'C.UTF-8'}
+
+def fail(reason):
+    sys.stderr.write('CanvasTTY container check failed: ' + reason + '.\n'); sys.stderr.flush(); os._exit(78)
+
+def privileges():
+    with open('/proc/self/status') as f: status = dict(line.split(':', 1) for line in f if ':' in line)
+    if status.get('NoNewPrivs', '').strip() != '1': fail('no-new-privileges is off')
+    if any(int(status.get(key, '-1').strip(), 16) != 0 for key in ['CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb']): fail('capabilities are not all dropped')
+
+def limits(requested):
+    with open('/proc/self/cgroup') as f:
+        if f.read().strip() != '0::/': fail('the cgroup is not private')
+    with open('/sys/fs/cgroup/cpu.max') as f: cpu = f.read().split()
+    if len(cpu) != 2 or cpu[0] == 'max' or int(cpu[0]) <= 0 or int(cpu[1]) <= 0 or int(cpu[0]) / int(cpu[1]) > requested['cpus'] + 0.000001: fail('CPU limit')
+    for name, maximum in [('memory.max', requested['memoryMb'] * 1048576), ('pids.max', requested['pids'])]:
+        with open('/sys/fs/cgroup/' + name) as f: value = f.read().strip()
+        if value == 'max' or int(value) <= 0 or int(value) > maximum: fail(name + ' limit')
+
+def mounts():
+    seen = set()
+    with open('/proc/self/mountinfo') as f:
+        for line in f:
+            fields = line.split(); mount = fields[4].replace('\\040', ' '); options = fields[5].split(',')
+            optional = fields[6:fields.index('-')]
+            if mount == '/' and 'ro' not in options: fail('the root filesystem is writable')
+            if mount == '/tmp' and any(flag not in options for flag in ['rw', 'nosuid', 'nodev', 'noexec']): fail('/tmp is not rw,nosuid,nodev,noexec')
+            if mount == '/workspace' and ('rw' not in options or any(item.startswith('shared:') for item in optional)): fail('/workspace is read-only or shared')
+            if mount == '/run/.containerenv' and 'ro' not in options: fail('container metadata is writable')
+            if mount in ['/', '/tmp', '/workspace']: seen.add(mount); continue
+            if mount in ['/etc/hosts', '/etc/hostname', '/etc/resolv.conf', '/run/.containerenv'] or mount.split('/')[1] in ['proc', 'sys', 'dev']: continue
+            fail('unexpected mount ' + mount[:80])
+    if len(seen) != 3: fail('a required mount is missing')
+
+def workspace(marker):
+    if os.path.realpath('/workspace') != '/workspace' or not os.path.isdir('/workspace'): fail('no /workspace folder')
+    name = marker['name']
+    if not name.startswith('.canvastty-container-') or '/' in name or len(name) != 57: fail('invalid marker')
+    fd = os.open('/workspace/' + name, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or os.read(fd, 129).decode('ascii') != marker['token']: fail('/workspace is not the prepared folder')
+    finally: os.close(fd)
+    os.unlink('/workspace/' + name)
+    fd, probe = tempfile.mkstemp(prefix='.canvastty-write-', dir='/workspace'); os.close(fd); os.unlink(probe)
+
+def run():
+    raw = os.environ.get('CANVASTTY_CONTAINER_RECIPE', '')
+    if len(raw) > 16384: fail('recipe too large')
+    recipe = json.loads(raw)
+    privileges(); limits(recipe['limits']); mounts(); workspace(recipe['marker'])
+    if recipe['mode'] == 'check':
+        command = recipe['command']
+        if not isinstance(command, str) or not command or len(command) > 4096: fail('invalid check command')
+        os.chdir('/workspace'); sys.stdout.flush()
+        os.execve('/bin/sh', ['/bin/sh', '-c', command], ENV)
+    if recipe['mode'] != 'hold': fail('unknown mode')
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(0)); signal.signal(signal.SIGINT, lambda *_: os._exit(0))
+    while True: signal.pause()
+
+try: run()
+except SystemExit: raise
+except Exception: fail('the recipe or the container could not be verified')
+`;
+var EXEC = String.raw`
+import os, sys, json
+def fail(reason):
+    sys.stderr.write('CanvasTTY container check failed: ' + reason + '.\n'); sys.stderr.flush(); os._exit(78)
+try:
+    r = json.loads(os.environ.get('CANVASTTY_CONTAINER_RECIPE', ''))
+    s = dict(line.split(':', 1) for line in open('/proc/self/status') if ':' in line)
+    if s['NoNewPrivs'].strip() != '1' or any(int(s[key].strip(), 16) for key in ['CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb']): fail('privileges')
+    cwd = r['cwd']
+    if (cwd != '/workspace' and not cwd.startswith('/workspace/')) or os.path.realpath(cwd) != cwd or not os.path.isdir(cwd): fail('no folder ' + cwd[:80])
+    env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/tmp', 'TERM': os.environ.get('TERM', 'xterm-256color'), 'LANG': 'C.UTF-8'}
+    for name in r.get('pass', []):
+        if name in os.environ: env[name] = os.environ[name]
+    name = r['command']
+    if name == 'shell':
+        args = ['-l']; program = next((p for p in ['/bin/bash', '/bin/sh'] if os.access(p, os.X_OK)), '')
+    else:
+        args = r['args']; program = '' if '/' in name else next((d + '/' + name for d in env['PATH'].split(':') if os.access(d + '/' + name, os.X_OK)), '')
+    if not program: fail(name[:40] + ' is not installed in the image')
+    os.chdir(cwd); os.execve(program, [program] + args, env)
+except SystemExit: raise
+except Exception: fail('the recipe could not be verified')
+`;
+
+// src/engine.mjs
+var PLUGIN_ID = "canvastty-environments";
+var PLUGIN_LABEL = "io.canvastty.plugin";
+var SESSION_LABEL = "io.canvastty.session";
+var MARKER_PREFIX = ".canvastty-container-";
+var HEX64 = /^[0-9a-f]{64}$/u;
+var markerName = (uuid) => `${MARKER_PREFIX}${uuid}`;
+var isMarkerPath = (path) => /(^|\/)\.canvastty-container-[0-9a-f-]{36}$/u.test(path);
+function parseEngineInfo(kind, data) {
+  if (!data || typeof data !== "object") throw new Error("The container engine returned no information.");
+  if (kind === "docker") {
+    const options = Array.isArray(data.SecurityOptions) ? data.SecurityOptions.map(String) : [];
+    if (data.OSType !== "linux" || String(data.CgroupVersion) !== "2" || data.CpuCfsPeriod !== true || data.CpuCfsQuota !== true || data.MemoryLimit !== true || data.PidsLimit !== true) {
+      throw new Error("Docker must run Linux containers with cgroup v2 CPU, memory and PID limits.");
+    }
+    if (options.some((option) => option.includes("userns"))) throw new Error("Docker with user-namespace remapping is not supported.");
+    return { rootless: options.some((option) => option.includes("name=rootless")), name: String(data.Name ?? "docker").slice(0, 80) };
+  }
+  const host = data.host ?? {};
+  if (host.os !== "linux" || host.cgroupVersion !== "v2" || !Array.isArray(host.cgroupControllers) || ["cpu", "memory", "pids"].some((controller) => !host.cgroupControllers.includes(controller))) {
+    throw new Error("Podman must run with cgroup v2 and delegated cpu, memory and pids controllers.");
+  }
+  return { rootless: host.security?.rootless === true, name: String(host.hostname ?? "podman").slice(0, 80) };
+}
+function parseImage(raw) {
+  const list = JSON.parse(raw);
+  const image = Array.isArray(list) && list.length === 1 ? list[0] : null;
+  const id = String(image?.Id ?? "").replace(/^sha256:/u, "");
+  if (!image || !HEX64.test(id)) throw new Error("The engine did not identify the image.");
+  if (image.Os !== "linux") throw new Error("The image is not a Linux image.");
+  if (image.Config?.Volumes && Object.keys(image.Config.Volumes).length) throw new Error("The image declares volumes; use an image without VOLUME.");
+  return { id };
+}
+function containerUser(kind, rootless, owner) {
+  if (kind === "podman" && rootless) return "keep-id";
+  if (kind === "docker" && rootless) return "0:0";
+  if (!/^\d{1,10}:\d{1,10}$/u.test(String(owner))) throw new Error("The workspace owner is unknown.");
+  return owner;
+}
+function recipe({ mode, limits, marker, command }) {
+  return JSON.stringify({ mode, limits: { cpus: limits.cpus, memoryMb: limits.memoryMb, pids: limits.pids }, marker, ...mode === "check" ? { command } : {} });
+}
+function createArgs({ kind, name, sessionId, workspace, user, network, limits, image, recipe: text }) {
+  if (!["docker", "podman"].includes(kind)) throw new Error("Unknown container engine.");
+  if (!workspace.startsWith("/") || /[,\u0000-\u001f\u007f]/u.test(workspace)) throw new Error("The workspace path cannot be mounted (commas and control characters are not allowed).");
+  if (!["none", "bridge"].includes(network)) throw new Error("The network must be none or bridge.");
+  const mount = `type=bind,src=${workspace},dst=/workspace,${kind === "docker" ? "bind-recursive=disabled" : "bind-nonrecursive"},bind-propagation=rprivate`;
+  return [
+    "container",
+    "create",
+    "--name",
+    name,
+    "--label",
+    `${PLUGIN_LABEL}=${PLUGIN_ID}`,
+    "--label",
+    `${SESSION_LABEL}=${sessionId}`,
+    "--pull=never",
+    "--read-only",
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
+    `--network=${network}`,
+    `--cpus=${limits.cpus}`,
+    `--memory=${limits.memoryMb}m`,
+    `--pids-limit=${limits.pids}`,
+    "--cgroupns=private",
+    "--restart=no",
+    "--stop-signal=SIGTERM",
+    "--log-driver=none",
+    `--tmpfs=/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777${kind === "podman" ? ",notmpcopyup" : ""}`,
+    "--workdir=/workspace",
+    `--mount=${mount}`,
+    "--entrypoint",
+    "python3",
+    ...kind === "docker" ? ["--no-healthcheck"] : [
+      "--health-cmd=none",
+      "--image-volume=ignore",
+      "--http-proxy=false",
+      "--unsetenv-all",
+      "--read-only-tmpfs=false",
+      "--systemd=false",
+      "--sdnotify=ignore"
+    ],
+    ...user === "keep-id" ? ["--userns=keep-id"] : [`--user=${user}`],
+    `--env=CANVASTTY_CONTAINER_RECIPE=${text}`,
+    "--env=HOME=/tmp",
+    "--env=PATH=/usr/local/bin:/usr/bin:/bin",
+    "--env=TERM=xterm-256color",
+    "--env=LANG=C.UTF-8",
+    image,
+    "-I",
+    "-S",
+    "-c",
+    BOOTSTRAP
+  ];
+}
+function verifyInspection(expected, raw) {
+  const list = typeof raw === "string" ? JSON.parse(raw) : raw;
+  const v = Array.isArray(list) ? list[0] : list;
+  if (!v || typeof v !== "object") throw new Error("The engine returned no container.");
+  const c = v.Config ?? {}, h = v.HostConfig ?? {}, { kind, limits } = expected;
+  const differs = (what) => {
+    throw new Error(`The container differs from its recipe (${what}); it is not used.`);
+  };
+  if (!HEX64.test(String(v.Id)) || expected.containerId && v.Id !== expected.containerId) differs("id");
+  if (String(v.Name).replace(/^\//u, "") !== expected.name) differs("name");
+  if (String(v.Image).replace(/^sha256:/u, "") !== expected.imageId) differs("image");
+  if (c.Labels?.[PLUGIN_LABEL] !== PLUGIN_ID || c.Labels?.[SESSION_LABEL] !== expected.sessionId) differs("labels");
+  if (v.Path !== "python3" || JSON.stringify(v.Args) !== JSON.stringify(["-I", "-S", "-c", BOOTSTRAP])) differs("entrypoint");
+  if (c.WorkingDir !== "/workspace" || expected.user !== "keep-id" && c.User !== expected.user) differs("user or folder");
+  if (c.Healthcheck && JSON.stringify(c.Healthcheck.Test) !== JSON.stringify(["NONE"])) differs("healthcheck");
+  const empty = (value) => value === void 0 || value === null || value === "" || Array.isArray(value) && value.length === 0;
+  const capsDropped = kind === "docker" ? Array.isArray(h.CapDrop) && h.CapDrop.some((cap) => /^all$/iu.test(cap)) : (v.EffectiveCaps === null || Array.isArray(v.EffectiveCaps) && !v.EffectiveCaps.length) && (v.BoundingCaps === null || Array.isArray(v.BoundingCaps) && !v.BoundingCaps.length);
+  if (h.Privileged !== false || h.ReadonlyRootfs !== true || !capsDropped || !empty(h.CapAdd)) differs("privileges");
+  if (!Array.isArray(h.SecurityOpt) || !h.SecurityOpt.some((option) => option === "no-new-privileges" || option === "no-new-privileges=true")) differs("no-new-privileges");
+  if (h.NetworkMode !== expected.network) differs("network");
+  const cpus = h.NanoCpus > 0 ? h.NanoCpus / 1e9 : h.CpuPeriod > 0 ? h.CpuQuota / h.CpuPeriod : NaN;
+  if (!(cpus > 0 && cpus <= limits.cpus + 1e-6) || !(h.Memory > 0 && h.Memory <= limits.memoryMb * 1048576) || !(h.PidsLimit > 0 && h.PidsLimit <= limits.pids)) differs("limits");
+  if (!empty(h.VolumesFrom) || !empty(h.Devices) || !empty(h.DeviceRequests) || ["PidMode", "IpcMode", "UTSMode"].some((key) => h[key] === "host")) differs("host sharing");
+  if ((kind === "docker" ? h.CgroupnsMode : h.CgroupMode) !== "private" || h.RestartPolicy?.Name !== "no") differs("cgroup or restart");
+  const mounts = Array.isArray(v.Mounts) ? v.Mounts : differs("mounts");
+  if (mounts.some((mount) => mount.Type === "tmpfs" && mount.Destination !== "/tmp")) differs("temporary mount");
+  const binds = mounts.filter((mount) => mount.Type !== "tmpfs");
+  if (binds.length !== 1 || binds[0].Type !== "bind" || binds[0].Source !== expected.workspace || binds[0].Destination !== "/workspace" || binds[0].RW !== true || binds[0].Propagation !== "rprivate") differs("workspace mount");
+  if (kind === "docker" && h.Mounts?.[0]?.BindOptions?.NonRecursive !== true) differs("recursive mount");
+  if (kind === "podman" && (!Array.isArray(binds[0].Options) || !binds[0].Options.includes("bind") || binds[0].Options.includes("rbind"))) differs("recursive mount");
+  const tmp = typeof h.Tmpfs?.["/tmp"] === "string" ? h.Tmpfs["/tmp"].split(",") : [];
+  const size = tmp.find((option) => option.startsWith("size="))?.match(/^size=(\d+)([kmg]?)$/iu);
+  const bytes = size ? Number(size[1]) * { "": 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 }[size[2].toLowerCase()] : NaN;
+  if (Object.keys(h.Tmpfs ?? {}).length !== 1 || !(bytes > 0 && bytes <= 256 * 1024 ** 2) || !["noexec", "nosuid", "nodev"].every((flag) => tmp.includes(flag))) differs("/tmp");
+  const state = v.State ?? {};
+  return { containerId: v.Id, running: state.Running === true, status: String(state.Status ?? ""), exitCode: Number.isInteger(state.ExitCode) ? state.ExitCode : null };
+}
+var safeEnvironment = () => Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"].flatMap((name) => process.env[name] === void 0 ? [] : [[name, process.env[name]]]));
+function findExecutable(name, extra) {
+  const dirs = [...String(process.env.PATH ?? "").split(delimiter), ...extra].filter(Boolean);
+  for (const dir of dirs) {
+    const path = join(dir, name);
+    try {
+      if (statSync(path).isFile()) return path;
+    } catch {
+    }
+  }
+  return null;
+}
+function dockerSocket() {
+  const fromEnv = String(process.env.DOCKER_HOST ?? "");
+  const candidates = [
+    fromEnv.startsWith("unix://") ? fromEnv.slice(7) : "",
+    join(homedir(), ".docker/run/docker.sock"),
+    "/var/run/docker.sock",
+    join(homedir(), ".colima/default/docker.sock"),
+    join(homedir(), ".orbstack/run/docker.sock"),
+    join(homedir(), ".rd/docker.sock")
+  ];
+  return candidates.find((path) => {
+    try {
+      return path && statSync(path).isSocket();
+    } catch {
+      return false;
+    }
+  }) ?? null;
+}
+function runEngine(engine, words, { timeoutMs = 2e4, env = {} } = {}) {
+  return new Promise((resolve3, reject) => {
+    execFile(
+      engine.exe,
+      [...engine.prefix, ...words],
+      { env: { ...safeEnvironment(), ...env }, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024, encoding: "utf8" },
+      (error, stdout, stderr) => {
+        if (!error) return resolve3(stdout);
+        const detail = String(stderr || error.message).replace(/\s+/gu, " ").trim().slice(0, 300);
+        reject(Object.assign(new Error(error.killed ? `${engine.kind} ${words[1] ?? words[0]} did not finish in time.` : detail || `${engine.kind} failed.`), { exitCode: error.code }));
+      }
+    );
+  });
+}
+function attachEngine(engine, containerId, { timeoutMs, maxBytes = 256 * 1024, onChild }) {
+  return new Promise((resolve3) => {
+    const child = spawn(engine.exe, [...engine.prefix, "container", "start", "--attach", containerId], { env: safeEnvironment(), stdio: ["ignore", "pipe", "pipe"] });
+    onChild?.(child);
+    let output = "", timedOut = false;
+    const keep = (chunk) => {
+      output = (output + chunk).slice(-maxBytes);
+    };
+    child.stdout.setEncoding("utf8").on("data", keep);
+    child.stderr.setEncoding("utf8").on("data", keep);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve3({ code: null, output: error.message, timedOut });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve3({ code, output, timedOut });
+    });
+  });
+}
+var DOCKER_DIRS = ["/usr/local/bin", "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin", "/usr/bin"];
+var PODMAN_DIRS = ["/opt/podman/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"];
+async function detectLocalEngine({ preferred = "auto", dataDir, run = runEngine }) {
+  const reasons = [];
+  if (preferred === "auto" || preferred === "docker") {
+    const exe = findExecutable("docker", DOCKER_DIRS);
+    const socket = exe ? dockerSocket() : null;
+    if (!exe) reasons.push("Docker is not installed");
+    else if (!socket) reasons.push("Docker is installed but not running (no socket)");
+    else {
+      const config = join(dataDir, "engine", "docker-config");
+      mkdirSync(config, { recursive: true, mode: 448 });
+      const engine = { kind: "docker", exe, prefix: ["--config", config, "--host", `unix://${socket}`] };
+      try {
+        return { ...engine, ...parseEngineInfo("docker", JSON.parse(await run(engine, ["info", "--format", "{{json .}}"], { timeoutMs: 6e3 }))) };
+      } catch (error) {
+        reasons.push(`Docker: ${error.message}`);
+      }
+    }
+  }
+  if (preferred === "auto" || preferred === "podman") {
+    const exe = findExecutable("podman", PODMAN_DIRS);
+    if (!exe) reasons.push("Podman is not installed");
+    else {
+      const engine = { kind: "podman", exe, prefix: [] };
+      try {
+        return { ...engine, ...parseEngineInfo("podman", JSON.parse(await run(engine, ["info", "--format=json"], { timeoutMs: 6e3 }))) };
+      } catch (error) {
+        reasons.push(`Podman: ${String(error.message).includes("machine") || String(error.message).includes("connect") ? "not running (start its machine first)" : error.message}`);
+      }
+    }
+  }
+  throw new Error(`No container engine can be used on this computer: ${reasons.join("; ")}.`);
 }
 
 // src/hosts.mjs
@@ -221,6 +557,17 @@ if [ "$4" = tip ]; then echo "$tip"; exit 0; fi
 g update-ref "$ref" "$tip" || exit 9
 g bundle create --quiet - "$ref" "^$base" || exit 11
 `;
+var SNAPSHOT = PRELUDE + String.raw`work=$(mktemp -d "${"${TMPDIR:-/tmp}"}/canvastty-capsule.XXXXXX") || exit 7
+trap 'rm -rf "$work"' EXIT
+trap 'exit 1' HUP INT TERM
+GIT_INDEX_FILE=$work/index g read-tree "$head" || exit 9
+GIT_INDEX_FILE=$work/index g add -A --pathspec-from-file=- --pathspec-file-nul || exit 9
+tree=$(GIT_INDEX_FILE=$work/index g write-tree) || exit 9
+if [ "$tree" = "$(g rev-parse "$head^{tree}")" ]; then tip=$head
+else tip=$(GIT_AUTHOR_NAME=CanvasTTY GIT_AUTHOR_EMAIL=canvastty@localhost GIT_COMMITTER_NAME=CanvasTTY GIT_COMMITTER_EMAIL=canvastty@localhost g commit-tree "$tree" -p "$head" -m 'CanvasTTY: capsule snapshot of an agent working tree') || exit 9
+fi
+echo "$head $tip"
+`;
 var REFUSALS = {
   "no-folder": "The agent's folder no longer exists there.",
   "not-git": "The agent's folder is not a Git repository, so its changes cannot be collected (only Git working copies are collected, never arbitrary files).",
@@ -247,8 +594,8 @@ function sshTransport(host, { ssh = "ssh" } = {}) {
   );
 }
 function runProcess(command, args, input, timeoutMs, env) {
-  return new Promise((resolve2) => {
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env });
+  return new Promise((resolve3) => {
+    const child = spawn2(command, args, { stdio: ["pipe", "pipe", "pipe"], env });
     const chunks = [];
     let size = 0, stderr = "", over = false, timedOut = false;
     const timer = setTimeout(() => {
@@ -270,11 +617,11 @@ function runProcess(command, args, input, timeoutMs, env) {
     child.stdin.on("error", () => void 0);
     child.on("error", (error) => {
       clearTimeout(timer);
-      resolve2({ code: null, stdout: Buffer.alloc(0), stderr: error.message, timedOut });
+      resolve3({ code: null, stdout: Buffer.alloc(0), stderr: error.message, timedOut });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolve2({
+      resolve3({
         code: over || timedOut ? null : code,
         stdout: Buffer.concat(chunks),
         timedOut,
@@ -289,12 +636,12 @@ function cleanEnvironment() {
 }
 function git(cwd, args, { input, timeoutMs = 3e4 } = {}) {
   const command = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotepath=false", "-C", cwd, ...args];
-  return new Promise((resolve2, reject) => {
-    const child = execFile(
+  return new Promise((resolve3, reject) => {
+    const child = execFile2(
       "git",
       command,
       { env: cleanEnvironment(), timeout: Math.max(1, timeoutMs), maxBuffer: 16 * 1024 * 1024, encoding: "utf8" },
-      (error, stdout) => error ? reject(error) : resolve2(stdout)
+      (error, stdout) => error ? reject(error) : resolve3(stdout)
     );
     child.stdin?.end(input ?? "");
   });
@@ -332,7 +679,8 @@ function splitCollected(stdout) {
 }
 function pathspecs(changed) {
   const excluded = [...new Set(changed.filter((path) => isCredentialPath(path)))].sort();
-  return { input: Buffer.from([".", ...excluded.map((path) => `:(exclude,literal)${path}`)].join("\0") + "\0", "utf8"), excluded };
+  const markers = changed.filter((path) => isMarkerPath(path));
+  return { input: Buffer.from([".", ...[...excluded, ...markers].map((path) => `:(exclude,literal)${path}`)].join("\0") + "\0", "utf8"), excluded };
 }
 async function inspect(transport, folder, budget) {
   const run = await transport(INSPECT, [folder], Buffer.alloc(0), budget());
@@ -393,9 +741,9 @@ async function collectRemote({ sessionId, title, localFolder, remoteFolder, tran
   if (bundle.length > MAX_BUNDLE_BYTES) throw new CollectionRefusal("The changes exceed the collection limit (256 MiB).");
   refuseCredentials(paths);
   const branch = await freeBranch(repository, collectionBranchName(sessionId, title));
-  const temporary = await mkdtemp(join(tmpdir(), "canvastty-collect-"));
+  const temporary = await mkdtemp(join2(tmpdir(), "canvastty-collect-"));
   try {
-    const file = join(temporary, "changes.bundle");
+    const file = join2(temporary, "changes.bundle");
     await writeFile(file, bundle, { mode: 384 });
     const heads = await git(repository, ["bundle", "list-heads", file], { timeoutMs: budget() });
     const tip = heads.split("\n").map((line) => line.split(" ")).find(([, name]) => name === ref)?.[0];
@@ -465,25 +813,303 @@ async function collectWorktree({ sessionId, title, sourceFolder, worktreeFolder,
   };
 }
 
+// src/containerSettings.mjs
+var CONTAINER_SETTINGS_KEY = "containers";
+var CONTAINER_DEFAULTS = Object.freeze({
+  engine: "auto",
+  // this computer: auto (Docker, then Podman), docker or podman
+  remoteEngine: "podman",
+  // on a server: podman or docker, by name on the server's PATH
+  image: "",
+  // an existing image with python3; never pulled
+  cpus: 2,
+  memoryMb: 2048,
+  pids: 512,
+  checkCommand: "",
+  // capsule checks: run with /bin/sh -c in /workspace
+  checkTimeoutSec: 600
+});
+var IMAGE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$/u;
+var NUMBERS = { cpus: [0.1, 64], memoryMb: [64, 262144], pids: [16, 65536], checkTimeoutSec: [10, 3600] };
+function containerSettingsInvalidReason(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "settings must be an object";
+  const unknown = Object.keys(value).find((key) => !(key in CONTAINER_DEFAULTS));
+  if (unknown) return `unknown field ${unknown.slice(0, 40)}`;
+  if (value.engine !== void 0 && !["auto", "docker", "podman"].includes(value.engine)) return "engine must be auto, docker or podman";
+  if (value.remoteEngine !== void 0 && !["docker", "podman"].includes(value.remoteEngine)) return "server engine must be docker or podman";
+  if (value.image !== void 0 && value.image !== "" && !imageValid(value.image)) return "image must be a name like python:3.12-slim (letters, digits, . _ / : @ -)";
+  for (const [key, [min, max]] of Object.entries(NUMBERS)) {
+    if (value[key] === void 0) continue;
+    if (typeof value[key] !== "number" || !Number.isFinite(value[key]) || value[key] < min || value[key] > max) return `${key} must be a number from ${min} to ${max}`;
+    if (key !== "cpus" && !Number.isInteger(value[key])) return `${key} must be a whole number`;
+  }
+  if (value.checkCommand !== void 0 && (typeof value.checkCommand !== "string" || value.checkCommand.length > 2e3 || value.checkCommand.includes("\0"))) {
+    return "the check command is at most 2000 characters";
+  }
+  return null;
+}
+function imageValid(image) {
+  return typeof image === "string" && IMAGE.test(image) && !image.includes("..");
+}
+function normalizeContainerSettings(value) {
+  if (value === void 0 || value === null || containerSettingsInvalidReason(value) !== null) return { ...CONTAINER_DEFAULTS };
+  return { ...CONTAINER_DEFAULTS, ...value };
+}
+
+// src/capsules.mjs
+var MAX_RECORDS = 50;
+var LOG_TAIL = 4e3;
+var COMMIT2 = /^[0-9a-f]{40,64}$/u;
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+var stripAnsi = (text) => text.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, "").replace(/\r/gu, "");
+function createCapsules({
+  pluginId,
+  dataDir,
+  readSettings,
+  setBadge = async () => {
+  },
+  detect = detectLocalEngine,
+  run = runEngine,
+  attach = attachEngine,
+  snapshotTimeoutMs = 1e4
+}) {
+  const root = resolve(dataDir, "capsules");
+  const worktreesRoot = resolve(dataDir, "worktrees");
+  const records = /* @__PURE__ */ new Map();
+  const running = /* @__PURE__ */ new Map();
+  mkdirSync2(root, { recursive: true, mode: 448 });
+  for (const name of readdirSync(root).filter((file) => file.endsWith(".json"))) {
+    try {
+      const record = JSON.parse(readFileSync(join3(root, name), "utf8"));
+      if (!UUID.test(record.id) || !COMMIT2.test(record.tip)) continue;
+      if (record.status === "running") Object.assign(record, { status: "interrupted", finishedAt: record.startedAt });
+      records.set(record.id, record);
+    } catch {
+    }
+  }
+  const save = async (record) => {
+    const file = join3(root, `${record.id}.json`);
+    await writeFile2(`${file}.tmp`, JSON.stringify(record), { mode: 384 });
+    await rename(`${file}.tmp`, file);
+  };
+  const latest = (sessionId) => [...records.values()].filter((record) => record.sessionId === sessionId).sort((a, b) => b.startedAt - a.startedAt)[0] ?? null;
+  async function source(session) {
+    const environment = session.environment;
+    if (!environment) {
+      const folder2 = session.workingDirectory ?? session.cwd;
+      return { folder: folder2, repository: await localRepository(folder2), base: null };
+    }
+    if (environment.pluginId !== pluginId || !["worktree", "container"].includes(environment.kind)) {
+      throw new CollectionRefusal("Capsule checks run on this computer: collect this card's changes first (Collect changes), then check them from a worktree card.");
+    }
+    const ref = environment.ref ?? {};
+    const folder = resolve(String(environment.kind === "worktree" ? ref.dir : ref.workspace));
+    if (environment.kind === "worktree" || ref.mode === "copy") {
+      const owned = environment.kind === "worktree" ? ref : ref.worktree ?? {};
+      if (!folder.startsWith(worktreesRoot + sep) || typeof owned.repo !== "string") throw new CollectionRefusal("This card's folder does not belong to the plugin.");
+      return { folder, repository: await localRepository(owned.repo), base: COMMIT2.test(String(owned.base)) ? owned.base : null };
+    }
+    return { folder, repository: await localRepository(folder), base: null };
+  }
+  function unpack(repository, tip, directory) {
+    return new Promise((done, fail) => {
+      const archive = spawn3("git", ["-c", "core.hooksPath=/dev/null", "-C", repository, "archive", "--format=tar", tip], { stdio: ["ignore", "pipe", "pipe"] });
+      const tar = spawn3("tar", ["-x", "-C", directory], { stdio: ["pipe", "ignore", "pipe"] });
+      let stderr = "";
+      archive.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      tar.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      archive.stdout.pipe(tar.stdin);
+      let codes = 0;
+      const settle = (code) => {
+        if (code !== 0) return fail(new Error(`unpacking the snapshot failed: ${stderr.slice(0, 200)}`));
+        if (++codes === 2) done();
+      };
+      archive.on("close", settle);
+      tar.on("close", settle);
+      archive.on("error", fail);
+      tar.on("error", fail);
+    });
+  }
+  async function execute(record, engine, settings) {
+    const directory = join3(root, record.id, "workspace");
+    const name = `canvastty-${randomUUID()}`, token = randomUUID();
+    const limits = { cpus: settings.cpus, memoryMb: settings.memoryMb, pids: settings.pids };
+    let created = null;
+    try {
+      await mkdir(directory, { recursive: true, mode: 448 });
+      await unpack(record.repository, record.tip, directory);
+      const { id: imageId } = parseImage(await run(engine, ["image", "inspect", record.image], { timeoutMs: 8e3 }));
+      const info = statSync2(directory);
+      const user = containerUser(engine.kind, engine.rootless, `${info.uid}:${info.gid}`);
+      await writeFile2(join3(directory, markerName(token)), token, { mode: 384 });
+      created = run(engine, createArgs({
+        kind: engine.kind,
+        name,
+        sessionId: record.sessionId,
+        workspace: directory,
+        user,
+        network: "none",
+        limits,
+        image: record.image,
+        recipe: recipe({ mode: "check", limits, marker: { name: markerName(token), token }, command: record.command })
+      }), { timeoutMs: 2e4 }).then((out) => out.trim());
+      const containerId = await created;
+      const expected = { kind: engine.kind, name, sessionId: record.sessionId, workspace: directory, user, network: "none", limits, imageId, containerId };
+      verifyInspection(expected, await run(engine, ["container", "inspect", containerId], { timeoutMs: 8e3 }));
+      const attached = await attach(engine, containerId, { timeoutMs: settings.checkTimeoutSec * 1e3 });
+      const state = attached.timedOut ? null : verifyInspection(expected, await run(engine, ["container", "inspect", containerId], { timeoutMs: 8e3 }));
+      const output = stripAnsi(attached.output);
+      record.logTail = output.slice(-LOG_TAIL);
+      record.exitCode = state?.exitCode ?? null;
+      if (attached.timedOut) Object.assign(record, { status: "failed", reason: `the check ran longer than ${settings.checkTimeoutSec} s and was stopped` });
+      else if (state.exitCode === 78 && output.includes("CanvasTTY container check failed")) Object.assign(record, { status: "error", reason: output.match(/CanvasTTY container check failed: [^\n]*/u)[0] });
+      else record.status = state.exitCode === 0 ? "passed" : "failed";
+    } catch (error) {
+      Object.assign(record, { status: "error", reason: String(error.message).slice(0, 400) });
+    } finally {
+      if (created) {
+        await created.catch(() => void 0);
+        await run(engine, ["container", "rm", "--force", name], { timeoutMs: 15e3 }).catch(() => void 0);
+      }
+      await rm2(join3(root, record.id), { recursive: true, force: true }).catch(() => void 0);
+      record.finishedAt = Date.now();
+      if (record.status !== "passed") await git(record.repository, ["update-ref", "-d", `refs/canvastty/capsules/${record.id}`]).catch(() => void 0);
+      await save(record).catch(() => void 0);
+      const tone = record.status === "passed" ? "info" : "error";
+      const text = record.status === "passed" ? "checks passed" : record.status === "failed" ? "checks failed" : "check error";
+      const lastLine = (record.logTail ?? "").trim().split("\n").pop() ?? "";
+      await setBadge(record.sessionId, { text, tone, tooltip: `${record.command.slice(0, 60)} \u2192 ${record.exitCode ?? record.reason ?? "?"} \xB7 ${lastLine}`.slice(0, 200) }).catch(() => void 0);
+    }
+  }
+  function describe(record, { forToast = false } = {}) {
+    const seconds = record.finishedAt ? Math.max(1, Math.round((record.finishedAt - record.startedAt) / 1e3)) : null;
+    const head = {
+      running: `Checks are running in capsule ${record.id.slice(0, 8)} (\`${record.command}\`); the card's badge shows the result, then choose Show check result.`,
+      passed: `Checks passed in capsule ${record.id.slice(0, 8)}: \`${record.command}\` exited 0 in ${seconds} s. Apply checked snapshot makes it a local branch.`,
+      failed: `Checks failed in capsule ${record.id.slice(0, 8)}: \`${record.command}\` ${record.reason ?? `exited ${record.exitCode}`}${seconds ? ` after ${seconds} s` : ""}.`,
+      error: `The check could not run: ${record.reason ?? "unknown error"}.`,
+      interrupted: `The check in capsule ${record.id.slice(0, 8)} was interrupted (the app or the service stopped); run it again.`
+    }[record.status] ?? `Capsule ${record.id.slice(0, 8)}: ${record.status}.`;
+    const lines = [head, `Snapshot ${record.tip.slice(0, 12)} of the card's work (based on ${record.base.slice(0, 12)}).`];
+    if (record.excluded?.length) lines.push(`Left out (credential files) ${record.excluded.slice(0, 10).join(", ")}.`);
+    if (record.appliedBranch) lines.push(`Applied as branch ${record.appliedBranch}.`);
+    if (record.logTail) {
+      const tail = record.logTail.trim().split("\n").slice(-(forToast ? 12 : 60)).join("\n");
+      lines.push("--- last lines ---", forToast ? tail.slice(-900) : tail);
+    }
+    return lines.join("\n");
+  }
+  const answer = (record, forToast) => ({ ok: record.status !== "error", passed: ["passed", "running"].includes(record.status), text: describe(record, { forToast }) });
+  const waitFor = (task, ms) => Promise.race([task, new Promise((done) => setTimeout(done, ms))]);
+  return {
+    /** Snapshots the card and starts its check; answers when it finished or after waitMs. */
+    async run(session, { waitMs = 12e3, forToast = false } = {}) {
+      if (running.has(session.id)) {
+        await waitFor(running.get(session.id), waitMs);
+        return answer(latest(session.id), forToast);
+      }
+      const settings = normalizeContainerSettings(await readSettings());
+      if (!settings.checkCommand.trim()) return { ok: false, text: "No check command is set: add one in the plugin's Settings (Containers \u2192 Check command), for example `npm test`." };
+      if (!settings.image) return { ok: false, text: "No container image is set: choose one in the plugin's Settings (an existing image with python3 and what the check needs)." };
+      const budget = budgetFrom(snapshotTimeoutMs);
+      let record;
+      try {
+        const engine = await detect({ preferred: settings.engine, dataDir, run });
+        const { folder, repository, base } = await source(session);
+        const { changed } = await inspect(localTransport, folder, budget);
+        const { input, excluded } = pathspecs(changed);
+        const snapshot = await localTransport(SNAPSHOT, [folder], input, budget());
+        if (snapshot.code !== 0) throw refusal(snapshot, "Taking the snapshot");
+        const [head, tip] = snapshot.stdout.toString("utf8").trim().split(" ");
+        if (!COMMIT2.test(head) || !COMMIT2.test(tip)) throw new Error("Taking the snapshot returned no commit.");
+        record = {
+          id: randomUUID(),
+          sessionId: session.id,
+          title: String(session.title ?? ""),
+          repository,
+          base: base ?? head,
+          tip,
+          command: settings.checkCommand,
+          image: settings.image,
+          excluded,
+          status: "running",
+          startedAt: Date.now()
+        };
+        await git(repository, ["update-ref", `refs/canvastty/capsules/${record.id}`, tip], { timeoutMs: budget() });
+        records.set(record.id, record);
+        await save(record);
+        for (const old of [...records.values()].sort((a, b) => b.startedAt - a.startedAt).slice(MAX_RECORDS)) {
+          records.delete(old.id);
+          await rm2(join3(root, `${old.id}.json`), { force: true });
+          await git(old.repository, ["update-ref", "-d", `refs/canvastty/capsules/${old.id}`]).catch(() => void 0);
+        }
+        await setBadge(session.id, { text: "checking\u2026", tone: "neutral", tooltip: `${settings.checkCommand.slice(0, 80)} in capsule ${record.id.slice(0, 8)}` }).catch(() => void 0);
+        const task = execute(record, engine, settings).finally(() => running.delete(session.id));
+        running.set(session.id, task);
+      } catch (error) {
+        const text = error instanceof CollectionRefusal ? `Nothing was checked: ${error.message}` : `The check could not start: ${error.message}`;
+        return { ok: false, text };
+      }
+      await waitFor(running.get(session.id), waitMs);
+      return answer(record, forToast);
+    },
+    async result(session, { waitMs = 12e3, forToast = false } = {}) {
+      if (running.has(session.id)) await waitFor(running.get(session.id), waitMs);
+      const record = latest(session.id);
+      return record ? answer(record, forToast) : { ok: false, text: "This card has no capsule check yet: choose Run checks in a capsule." };
+    },
+    /** A passed snapshot becomes a new local branch; the person's branch and working tree are not touched. */
+    async apply(session) {
+      const record = latest(session.id);
+      if (!record) return { ok: false, text: "This card has no capsule check yet: choose Run checks in a capsule." };
+      if (record.status === "running") return { ok: false, text: "The check is still running; apply it when it passed." };
+      if (record.appliedBranch) return { ok: true, text: `Already applied as branch ${record.appliedBranch}.`, branch: record.appliedBranch };
+      if (record.status !== "passed") return { ok: false, text: `Only a passed snapshot is applied; the last check ${record.status === "failed" ? "failed" : "did not run"}. Fix it and run checks again, or use Collect changes to take the work as it is.` };
+      try {
+        const names = (await git(record.repository, ["diff", "--name-only", "--no-renames", "-z", record.base, record.tip])).split("\0").filter(Boolean);
+        refuseCredentials(names);
+        const branch = await freeBranch(record.repository, `${collectionBranchName(session.id, session.title ?? record.title)}-checked`);
+        await git(record.repository, ["branch", "--no-track", "--", branch, record.tip]);
+        await git(record.repository, ["update-ref", "-d", `refs/canvastty/capsules/${record.id}`]).catch(() => void 0);
+        record.appliedBranch = branch;
+        await save(record);
+        const stat = (await git(record.repository, ["diff", "--stat=100", "--no-color", "--no-ext-diff", record.base, record.tip, "--"])).trim().split("\n").slice(-20).join("\n");
+        return { ok: true, branch, text: `Applied the checked snapshot as branch ${branch} (based on ${record.base.slice(0, 12)}). Nothing was merged.${stat ? `
+${stat}` : ""}` };
+      } catch (error) {
+        return { ok: false, text: error instanceof CollectionRefusal ? `Nothing was applied: ${error.message}` : `Applying failed: ${error.message}` };
+      }
+    }
+  };
+}
+
 // src/results.mjs
+import { resolve as resolve2, sep as sep2 } from "node:path";
 var COLLECT_BUDGET_MS = 13500;
 function createResults({ pluginId, dataDir, transports = {}, timeoutMs = COLLECT_BUDGET_MS }) {
   const running = /* @__PURE__ */ new Set();
-  const worktreesRoot = resolve(dataDir, "worktrees");
+  const worktreesRoot = resolve2(dataDir, "worktrees");
   async function collect(session) {
     const environment = session.environment;
     if (!environment) {
       return { text: "This card works directly in the project folder on this computer: its changes are already there, so there is nothing to collect.", ok: true, state: "in-place" };
     }
-    if (environment.pluginId !== pluginId || !["worktree", "ssh-host"].includes(environment.kind)) {
+    if (environment.pluginId !== pluginId || !["worktree", "ssh-host", "container", "remote-container"].includes(environment.kind)) {
       return { text: `This card runs in ${environment.label}, which another plugin manages; it cannot be collected here.`, ok: false };
     }
     if (running.has(session.id)) return { text: "This card's changes are being collected already.", ok: false };
     running.add(session.id);
     try {
-      const result = environment.kind === "worktree" ? await collectFromWorktree(session) : await collectFromServer(session);
+      if (environment.kind === "container" && environment.ref?.mode === "project") {
+        return { text: "This container works on the project folder itself: its changes are already there, so there is nothing to collect.", ok: true, state: "in-place" };
+      }
+      const result = environment.kind === "worktree" ? await collectFromWorktree(session) : environment.kind === "container" ? await collectFromContainer(session) : environment.kind === "remote-container" ? await collectFromRemoteContainer(session) : await collectFromServer(session);
       const lines = [result.message];
-      if (result.excluded?.length) lines.push(`Left out as credentials: ${result.excluded.slice(0, 10).join(", ")}.`);
+      if (result.excluded?.length) lines.push(`Left out (credential files) ${result.excluded.slice(0, 10).join(", ")}.`);
       if (result.diffstat) lines.push(result.diffstat);
       return { text: lines.join("\n"), ok: true, state: result.state, branch: result.branch };
     } catch (error) {
@@ -495,8 +1121,8 @@ function createResults({ pluginId, dataDir, transports = {}, timeoutMs = COLLECT
   }
   function collectFromWorktree(session) {
     const ref = session.environment.ref ?? {};
-    const dir = typeof ref.dir === "string" ? resolve(ref.dir) : "";
-    if (!dir.startsWith(worktreesRoot + sep) || typeof ref.repo !== "string") throw new CollectionRefusal("This worktree does not belong to the plugin.");
+    const dir = typeof ref.dir === "string" ? resolve2(ref.dir) : "";
+    if (!dir.startsWith(worktreesRoot + sep2) || typeof ref.repo !== "string") throw new CollectionRefusal("This worktree does not belong to the plugin.");
     return collectWorktree({
       sessionId: session.id,
       title: session.title,
@@ -506,6 +1132,16 @@ function createResults({ pluginId, dataDir, transports = {}, timeoutMs = COLLECT
       ...transports.local ? { transport: transports.local } : {},
       timeoutMs
     });
+  }
+  function collectFromContainer(session) {
+    const ref = session.environment.ref ?? {};
+    return collectFromWorktree({ ...session, environment: { ...session.environment, ref: ref.worktree ?? {} } });
+  }
+  function collectFromRemoteContainer(session) {
+    const ref = session.environment.ref ?? {};
+    if (!ref.host || typeof ref.workspace !== "string" || typeof ref.localFolder !== "string") throw new CollectionRefusal("This card's container ref is unreadable.");
+    const transport = (transports.remote ?? sshTransport)(ref.host);
+    return collectRemote({ sessionId: session.id, title: session.title, localFolder: ref.localFolder, remoteFolder: ref.workspace, transport, timeoutMs });
   }
   function collectFromServer(session) {
     const ref = session.environment.ref ?? {};
@@ -518,10 +1154,18 @@ function createResults({ pluginId, dataDir, transports = {}, timeoutMs = COLLECT
 
 // src/services/results.mjs
 var results = null;
+var capsules = null;
 var sessions = /* @__PURE__ */ new Map();
+var badge = (callHost) => (sessionId, value) => callHost("cards.setBadge", { sessionId, badge: value });
 serve({
   onInitialize: async ({ pluginId, dataDir }, { callHost, log }) => {
     results = createResults({ pluginId, dataDir });
+    capsules = createCapsules({
+      pluginId,
+      dataDir,
+      setBadge: badge(callHost),
+      readSettings: async () => await callHost("storage.get", { key: CONTAINER_SETTINGS_KEY }) ?? null
+    });
     try {
       const { sessions: open } = await callHost("sessions.subscribe", {});
       for (const session of open) sessions.set(session.id, session);
@@ -537,22 +1181,36 @@ serve({
   },
   methods: {
     async "canvastty.tools.call"({ tool, caller, input }) {
-      if (tool !== "collect") throw new Error(`Unknown tool: ${tool}`);
+      if (tool !== "collect" && tool !== "capsule") throw new Error(`Unknown tool: ${tool}`);
       if (!results) throw new Error("The results service is starting; try again.");
       let target = caller;
       if (input.sessionId !== void 0 && input.sessionId !== caller.id) {
         target = sessions.get(input.sessionId);
         if (!target || target.parentSessionId !== caller.id) return { content: "That session is not one of your subagents.", isError: true };
       }
+      if (tool === "capsule") {
+        const action = input.action ?? "run";
+        const answer2 = action === "apply" ? await capsules.apply(target) : action === "result" ? await capsules.result(target, { waitMs: 13e3 }) : await capsules.run(target, { waitMs: 13e3 });
+        return { content: answer2.text, isError: !answer2.ok };
+      }
       const answer = await results.collect(target);
       return { content: answer.text, isError: !answer.ok };
     },
     async "canvastty.cards.invoke"({ actionId, session }, { callHost }) {
-      if (actionId !== "collect-changes") throw new Error(`Unknown action: ${actionId}`);
       if (!results) throw new Error("The results service is starting; try again.");
+      if (actionId === "capsule-check" || actionId === "capsule-result") {
+        const answer2 = actionId === "capsule-check" ? await capsules.run(session, { waitMs: 12e3, forToast: true }) : await capsules.result(session, { waitMs: 12e3, forToast: true });
+        return { message: answer2.text.slice(0, 2e3), tone: answer2.passed ? "info" : "error" };
+      }
+      if (actionId === "capsule-apply") {
+        const answer2 = await capsules.apply(session);
+        if (answer2.branch) await badge(callHost)(session.id, { text: "applied", tone: "info", tooltip: `Local branch ${answer2.branch}` }).catch(() => void 0);
+        return { message: answer2.text.slice(0, 2e3), tone: answer2.ok ? "info" : "error" };
+      }
+      if (actionId !== "collect-changes") throw new Error(`Unknown action: ${actionId}`);
       const answer = await results.collect(session);
       if (answer.branch) {
-        await callHost("cards.setBadge", { sessionId: session.id, badge: { text: "collected", tone: "info", tooltip: `Local branch ${answer.branch}` } }).catch(() => void 0);
+        await badge(callHost)(session.id, { text: "collected", tone: "info", tooltip: `Local branch ${answer.branch}` }).catch(() => void 0);
       }
       return { message: answer.text, tone: answer.ok ? "info" : "error" };
     }

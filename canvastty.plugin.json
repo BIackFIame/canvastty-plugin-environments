@@ -3,20 +3,37 @@
   "id": "canvastty-environments",
   "name": "CanvasTTY Environments",
   "version": "0.1.0",
-  "description": "Where a card runs: its own git worktree or a server over ssh, and Collect changes to bring the work home as a local branch.",
-  "description.ru": "Где работает окно: в своём git worktree или на сервере по ssh, и «Collect changes», чтобы забрать работу домой локальной веткой.",
+  "description": "Where a card runs: its own git worktree, a server over ssh, or a Docker/Podman container here or on a server; Collect changes brings the work home, and capsule checks run a saved check on a snapshot of it.",
+  "description.ru": "Где работает окно: в своём git worktree, на сервере по ssh или в контейнере Docker/Podman здесь или на сервере; «Collect changes» забирает работу домой, а проверки в капсуле запускают сохранённую проверку на снимке работы.",
   "author": "CanvasTTY contributors",
-  "permissions": [],
+  "permissions": [
+    "storage"
+  ],
   "coreFiles": [
     {
       "path": "README.md",
-      "bytes": 3201,
-      "sha256": "1cedd3d245b5d16d8cbb5fa0448b8b094e6dd7288cb6417bccc9dd969a1bbc24"
+      "bytes": 5907,
+      "sha256": "11482708926482c398315bed3f7ace1f63ba12c49ef842246ff6b5f8a03160a9"
     },
     {
       "path": "README.ru.md",
-      "bytes": 4593,
-      "sha256": "9c49b961b1f2cc519251e8d1f4356f0fc081b24c9c7fd91679e84d92ec97cc3f"
+      "bytes": 8867,
+      "sha256": "047d1f2dc097bc4f7d19928f3f84a536961b62a021895b4e77ad949a2756505d"
+    },
+    {
+      "path": "settings/hosts.html",
+      "bytes": 3183,
+      "sha256": "f3be2514596eb1dd336b126345901c573fe4702fa8c557097d32766bb99a7fcf"
+    },
+    {
+      "path": "settings/hosts.js",
+      "bytes": 10797,
+      "sha256": "36a52f3119f46af3271f5578ff09bc2ad93c179af8e79ad645691f0bd2d5bfe3"
+    },
+    {
+      "path": "settings/hosts.css",
+      "bytes": 996,
+      "sha256": "6d172e265633c68089fcd4e0fe517bdc8f34dd622c6f3a48bdf8b0ce2a3514fc"
     }
   ],
   "modules": [
@@ -48,41 +65,61 @@
       "files": [
         {
           "path": "services/ssh-host.mjs",
-          "bytes": 14457,
-          "sha256": "8309b33f0571b41a5ac3bdbd996e493368cccd2c656f2b4ce02f8acffc86e117"
-        },
+          "bytes": 14526,
+          "sha256": "df7251e9184062e33ac8876c02045cd739502ca34de2e838e33d1c87b60916d7"
+        }
+      ]
+    },
+    {
+      "id": "container",
+      "title": "Container",
+      "description": "Runs a card in a Docker or Podman container here: an existing image, /workspace = an owned copy or the project, no network by default, read-only root, no capabilities, limits checked from inside; restore restarts it.",
+      "defaultSelected": false,
+      "permissions": [
+        "environment:provide",
+        "storage"
+      ],
+      "files": [
         {
-          "path": "settings/hosts.html",
-          "bytes": 1526,
-          "sha256": "c8fe4590546558564c4e1b51537e92d5fdc881138492d90cd0875754605af0cd"
-        },
+          "path": "services/container.mjs",
+          "bytes": 41322,
+          "sha256": "7ca3bc1d34a54ba20569b335edd0738d15002e71eb73b3c28d13e3e7df8c8858"
+        }
+      ]
+    },
+    {
+      "id": "remote-container",
+      "title": "Container on a server",
+      "description": "The same container on a server from the ssh-host settings (Podman by default), created, checked and started over ssh. Nothing from this computer is forwarded into it.",
+      "defaultSelected": false,
+      "permissions": [
+        "environment:provide",
+        "storage"
+      ],
+      "files": [
         {
-          "path": "settings/hosts.js",
-          "bytes": 6510,
-          "sha256": "3a9f489890de85955078df1f1055de18ed0c23de3b8588e633e9762fe8031592"
-        },
-        {
-          "path": "settings/hosts.css",
-          "bytes": 864,
-          "sha256": "9154b4d3f32321c49a871bc2233d830c8a5acd23663f6d24257f856376143ba8"
+          "path": "services/remote-container.mjs",
+          "bytes": 43794,
+          "sha256": "8ce00a1f2b72ce28698eacff8f957cddd090ba2c0332b858aac4352c4553d2b0"
         }
       ]
     },
     {
       "id": "results",
-      "title": "Collect changes",
-      "description": "Card action and orchestrator tool that bring a worktree or server card's work home as a new local branch; nothing is merged.",
+      "title": "Collect changes and capsule checks",
+      "description": "Collect changes brings a worktree, server or container card's work home as a local branch; capsule checks run the saved check on a snapshot in an isolated container and apply a passed one as a branch.",
       "defaultSelected": true,
       "permissions": [
         "tools:agents",
         "cards:decorate",
-        "sessions:events"
+        "sessions:events",
+        "storage"
       ],
       "files": [
         {
           "path": "services/results.mjs",
-          "bytes": 26500,
-          "sha256": "fe8e0f7f9de05f1c2585dc58daf845f5911930ddf321778624741d143767c6cf"
+          "bytes": 65544,
+          "sha256": "f25f2aca9aea69b9d0c87165866125d28b0c5744355d24b8ae601bfbe3095f3b"
         }
       ]
     }
@@ -135,18 +172,140 @@
       ]
     },
     {
+      "id": "container",
+      "title": "Container",
+      "description": "Creates, checks, restarts and removes a local Docker or Podman container for cards started in it.",
+      "entry": "services/container.mjs",
+      "module": "container",
+      "environments": [
+        {
+          "kind": "container",
+          "label": "Container",
+          "description": "A Docker or Podman container on this computer; /workspace is a copy of the project or the project itself.",
+          "fields": [
+            {
+              "key": "workspace",
+              "label": "Workspace",
+              "kind": "select",
+              "options": [
+                {
+                  "value": "copy",
+                  "label": "A copy (git worktree; Collect changes brings it home)"
+                },
+                {
+                  "value": "project",
+                  "label": "The project folder itself"
+                }
+              ],
+              "default": "copy"
+            },
+            {
+              "key": "network",
+              "label": "Allow network (bridge)",
+              "kind": "boolean",
+              "default": false
+            },
+            {
+              "key": "image",
+              "label": "Image (empty: from Settings)",
+              "kind": "text",
+              "default": "",
+              "maxLength": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "remote-container",
+      "title": "Container on a server",
+      "description": "Creates, checks, restarts and removes a container on a configured server over ssh.",
+      "entry": "services/remote-container.mjs",
+      "module": "remote-container",
+      "environments": [
+        {
+          "kind": "remote-container",
+          "label": "Container on a server",
+          "description": "A container on a server from Settings, in the folder mapped to this project (or a copy of it).",
+          "fields": [
+            {
+              "key": "host",
+              "label": "Server (empty: the first one)",
+              "kind": "text",
+              "default": "",
+              "maxLength": 40
+            },
+            {
+              "key": "workspace",
+              "label": "Workspace",
+              "kind": "select",
+              "options": [
+                {
+                  "value": "copy",
+                  "label": "A copy (git worktree; Collect changes brings it home)"
+                },
+                {
+                  "value": "project",
+                  "label": "The project folder itself"
+                }
+              ],
+              "default": "copy"
+            },
+            {
+              "key": "network",
+              "label": "Allow network (bridge)",
+              "kind": "boolean",
+              "default": false
+            },
+            {
+              "key": "image",
+              "label": "Image (empty: from Settings)",
+              "kind": "text",
+              "default": "",
+              "maxLength": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "results",
-      "title": "Collect changes",
-      "description": "Brings a worktree or server card's changes home as a local branch.",
+      "title": "Collect changes and capsule checks",
+      "description": "Brings a card's changes home as a local branch; runs the saved check on a snapshot in an isolated container.",
       "entry": "services/results.mjs",
       "module": "results",
       "tools": [
         {
           "name": "collect",
-          "description": "Bring the changes of one of your subagents (or your own card) that runs in a worktree or on an ssh server home as a new local branch canvastty/<id>-<title>. Credential files are left out; nothing is merged and the current branch is not touched. Collect each finished subagent, then merge the branches.",
+          "description": "Bring the changes of one of your subagents (or your own card) that runs in a worktree, on an ssh server or in a container home as a new local branch canvastty/<id>-<title>. Credential files are left out; nothing is merged and the current branch is not touched. Collect each finished subagent, then merge the branches.",
           "inputSchema": {
             "type": "object",
             "properties": {
+              "sessionId": {
+                "type": "string",
+                "description": "A subagent of yours; omit for your own card."
+              }
+            },
+            "additionalProperties": false
+          },
+          "roles": [
+            "orchestrator"
+          ]
+        },
+        {
+          "name": "capsule",
+          "description": "Capsule checks on your own card or one of your subagents that works on this computer (worktree, container or the project folder): action run (default) snapshots its working tree and runs the check command from the plugin's settings in an isolated container without network, answering pass/fail and the log tail (or 'running' after 13 s; then call with action result); action apply turns a passed snapshot into a new local branch canvastty/<id>-<title>-checked. Nothing is merged and the current branch is not touched.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "run",
+                  "result",
+                  "apply"
+                ]
+              },
               "sessionId": {
                 "type": "string",
                 "description": "A subagent of yours; omit for your own card."
@@ -166,7 +325,39 @@
           "when": {
             "environmentKinds": [
               "worktree",
-              "ssh-host"
+              "ssh-host",
+              "container",
+              "remote-container"
+            ]
+          }
+        },
+        {
+          "id": "capsule-check",
+          "title": "Run checks in a capsule",
+          "when": {
+            "environmentKinds": [
+              "worktree",
+              "container"
+            ]
+          }
+        },
+        {
+          "id": "capsule-result",
+          "title": "Show check result",
+          "when": {
+            "environmentKinds": [
+              "worktree",
+              "container"
+            ]
+          }
+        },
+        {
+          "id": "capsule-apply",
+          "title": "Apply checked snapshot",
+          "when": {
+            "environmentKinds": [
+              "worktree",
+              "container"
             ]
           }
         }
@@ -175,17 +366,16 @@
   ],
   "contributions": [
     {
-      "id": "servers",
+      "id": "settings",
       "kind": "canvas-app",
-      "title": "Servers",
-      "description": "Servers and folder mappings for the ssh-host environment.",
+      "title": "Settings",
+      "description": "Servers and folder mappings (ssh-host, containers on a server), and container settings (engine, image, limits, check command).",
       "entry": "settings/hosts.html",
-      "module": "ssh-host",
       "defaultSize": {
-        "width": 680,
-        "height": 480
+        "width": 720,
+        "height": 620
       }
     }
   ],
-  "settingsContribution": "servers"
+  "settingsContribution": "settings"
 }

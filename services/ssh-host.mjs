@@ -204,15 +204,7 @@ async function checkRemoteFolder(host2, remoteFolder, { timeoutMs, ssh } = {}) {
   return `${host2.label} (${host2.sshHost}) cannot be reached over ssh${detail ? `: ${detail}` : ""}.`;
 }
 function createSshHostEnvironment({ dataDir, readHosts: readHosts2, ssh = "ssh", checkTimeoutMs = 8e3 }) {
-  const localRoots = [...new Set([
-    homedir(),
-    tmpdir(),
-    safeRealpath(tmpdir()),
-    "/private/var/folders",
-    "/var/folders",
-    dirname(dirname(dataDir)),
-    appRoot(process.execPath)
-  ].filter(Boolean))];
+  const localRoots = localRootsFor(dataDir);
   const refOf = (ref) => {
     if (!ref || typeof ref !== "object" || typeof ref.remoteFolder !== "string" || !ref.host) throw new Error("This card's server ref is unreadable.");
     return ref;
@@ -248,6 +240,17 @@ function createSshHostEnvironment({ dataDir, readHosts: readHosts2, ssh = "ssh",
       return { label: `ssh ${host2.label}`, detail: `${destination} ${remoteFolder}` };
     }
   };
+}
+function localRootsFor(dataDir) {
+  return [...new Set([
+    homedir(),
+    tmpdir(),
+    safeRealpath(tmpdir()),
+    "/private/var/folders",
+    "/var/folders",
+    dirname(dirname(dataDir)),
+    appRoot(process.execPath)
+  ].filter(Boolean))];
 }
 function safeRealpath(path) {
   try {

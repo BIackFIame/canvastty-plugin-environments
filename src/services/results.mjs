@@ -1,15 +1,23 @@
-// Service entry of the `results` module (bundled to services/results.mjs): card action "Collect changes" and the
-// orchestrator tool `collect` (listed as canvastty-environments__collect).
+// Service entry of the `results` module (bundled to services/results.mjs): card actions "Collect changes",
+// "Run checks in a capsule", "Show check result", "Apply checked snapshot", and the orchestrator tools `collect` and
+// `capsule` (listed as canvastty-environments__collect / __capsule).
 import { serve } from "../rpc.mjs";
+import { createCapsules } from "../capsules.mjs";
+import { CONTAINER_SETTINGS_KEY } from "../containerSettings.mjs";
 import { createResults } from "../results.mjs";
 
 let results = null;
+let capsules = null;
 /** Cards CanvasTTY told us about (sessions:events): id -> summary. No screen text. */
 const sessions = new Map();
+
+const badge = (callHost) => (sessionId, value) => callHost("cards.setBadge", { sessionId, badge: value });
 
 serve({
   onInitialize: async ({ pluginId, dataDir }, { callHost, log }) => {
     results = createResults({ pluginId, dataDir });
+    capsules = createCapsules({ pluginId, dataDir, setBadge: badge(callHost),
+      readSettings: async () => (await callHost("storage.get", { key: CONTAINER_SETTINGS_KEY })) ?? null });
     try {
       const { sessions: open } = await callHost("sessions.subscribe", {});
       for (const session of open) sessions.set(session.id, session);
@@ -25,7 +33,7 @@ serve({
   },
   methods: {
     async "canvastty.tools.call"({ tool, caller, input }) {
-      if (tool !== "collect") throw new Error(`Unknown tool: ${tool}`);
+      if (tool !== "collect" && tool !== "capsule") throw new Error(`Unknown tool: ${tool}`);
       if (!results) throw new Error("The results service is starting; try again.");
       let target = caller;
       if (input.sessionId !== undefined && input.sessionId !== caller.id) {
@@ -33,16 +41,31 @@ serve({
         // Only the caller's own subagents: CanvasTTY vouches for the caller, the plugin enforces this rule.
         if (!target || target.parentSessionId !== caller.id) return { content: "That session is not one of your subagents.", isError: true };
       }
+      if (tool === "capsule") {
+        const action = input.action ?? "run";
+        const answer = action === "apply" ? await capsules.apply(target) : action === "result" ? await capsules.result(target, { waitMs: 13_000 })
+          : await capsules.run(target, { waitMs: 13_000 });
+        return { content: answer.text, isError: !answer.ok };
+      }
       const answer = await results.collect(target);
       return { content: answer.text, isError: !answer.ok };
     },
     async "canvastty.cards.invoke"({ actionId, session }, { callHost }) {
-      if (actionId !== "collect-changes") throw new Error(`Unknown action: ${actionId}`);
       if (!results) throw new Error("The results service is starting; try again.");
+      if (actionId === "capsule-check" || actionId === "capsule-result") {
+        const answer = actionId === "capsule-check" ? await capsules.run(session, { waitMs: 12_000, forToast: true })
+          : await capsules.result(session, { waitMs: 12_000, forToast: true });
+        return { message: answer.text.slice(0, 2000), tone: answer.passed ? "info" : "error" };
+      }
+      if (actionId === "capsule-apply") {
+        const answer = await capsules.apply(session);
+        if (answer.branch) await badge(callHost)(session.id, { text: "applied", tone: "info", tooltip: `Local branch ${answer.branch}` }).catch(() => undefined);
+        return { message: answer.text.slice(0, 2000), tone: answer.ok ? "info" : "error" };
+      }
+      if (actionId !== "collect-changes") throw new Error(`Unknown action: ${actionId}`);
       const answer = await results.collect(session);
       if (answer.branch) {
-        await callHost("cards.setBadge", { sessionId: session.id, badge: { text: "collected", tone: "info", tooltip: `Local branch ${answer.branch}` } })
-          .catch(() => undefined);
+        await badge(callHost)(session.id, { text: "collected", tone: "info", tooltip: `Local branch ${answer.branch}` }).catch(() => undefined);
       }
       return { message: answer.text, tone: answer.ok ? "info" : "error" };
     }

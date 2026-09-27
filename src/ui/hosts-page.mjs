@@ -1,5 +1,7 @@
-// The ssh-host settings page (bundled to settings/hosts.js). Hosts live in the plugin's own storage; the service
-// validates them again before every use, so this page only helps the person get them right.
+// The plugin's settings page (bundled to settings/hosts.js): servers for ssh-host and remote containers, and the
+// container settings. Both live in the plugin's own storage; the services validate them again before every use, so
+// this page only helps the person get them right.
+import { CONTAINER_DEFAULTS, CONTAINER_SETTINGS_KEY, containerSettingsInvalidReason, normalizeContainerSettings } from "../containerSettings.mjs";
 import { hostInvalidReason, normalizeHosts } from "../hosts.mjs";
 
 const host = window.CanvasTTYPlugin;
@@ -83,3 +85,43 @@ document.querySelector("#save").addEventListener("click", () => {
 });
 
 load().catch((error) => say(`Could not load servers: ${error.message}`));
+
+// Containers
+const containers = document.querySelector("#containers");
+const containerStatus = document.querySelector("#containers-status");
+const sayContainers = (text) => { containerStatus.textContent = text; };
+
+async function loadContainers() {
+  const saved = normalizeContainerSettings(await host.storage.get(CONTAINER_SETTINGS_KEY));
+  for (const [key, value] of Object.entries(saved)) {
+    if (containers.elements[key]) containers.elements[key].value = String(value);
+  }
+}
+
+async function saveContainers() {
+  const data = Object.fromEntries(new FormData(containers));
+  const candidate = {};
+  for (const [key, fallback] of Object.entries(CONTAINER_DEFAULTS)) {
+    const text = String(data[key] ?? "").trim();
+    if (typeof fallback === "number") candidate[key] = text === "" ? fallback : Number(text);
+    else candidate[key] = text;
+  }
+  const problem = containerSettingsInvalidReason(candidate);
+  if (problem) return sayContainers(`Not saved: ${problem}.`);
+  await host.storage.set(CONTAINER_SETTINGS_KEY, candidate);
+  sayContainers("Saved containers.");
+}
+
+containers.addEventListener("submit", (event) => event.preventDefault());
+document.querySelector("#save-containers").addEventListener("click", () => {
+  saveContainers().catch((error) => sayContainers(`Not saved: ${error.message}`));
+});
+document.querySelector("#check-containers").addEventListener("click", async () => {
+  sayContainers("Checking…");
+  try {
+    sayContainers((await host.service.request("container", "check", {})).message);
+  } catch (error) {
+    sayContainers(`Check failed: ${error instanceof Error ? error.message : String(error)} (is the Container module installed and its native code trusted?)`);
+  }
+});
+loadContainers().catch((error) => sayContainers(`Could not load container settings: ${error.message}`));

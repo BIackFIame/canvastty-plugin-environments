@@ -1,5 +1,5 @@
 {
-  "name": "canvastty-environments",
+  "name": "canvastty-plugin-environments",
   "version": "0.1.0",
   "private": true,
   "type": "module",

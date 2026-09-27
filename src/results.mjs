@@ -1,6 +1,6 @@
-// The `results` module: "Collect changes" (card action) and the orchestrator tool `collect` bring a worktree or
-// ssh-host card's work home as a local branch. It acts only on cards placed by this plugin's own environments, and
-// the tool only on the caller itself or the caller's own subagents.
+// The `results` module: "Collect changes" (card action) and the orchestrator tool `collect` bring a worktree, ssh-host,
+// container or remote-container card's work home as a local branch. It acts only on cards placed by this plugin's own
+// environments, and the tool only on the caller itself or the caller's own subagents.
 import { resolve, sep } from "node:path";
 import { CollectionRefusal, collectRemote, collectWorktree, sshTransport } from "./collect.mjs";
 
@@ -17,15 +17,20 @@ export function createResults({ pluginId, dataDir, transports = {}, timeoutMs = 
     if (!environment) {
       return { text: "This card works directly in the project folder on this computer: its changes are already there, so there is nothing to collect.", ok: true, state: "in-place" };
     }
-    if (environment.pluginId !== pluginId || !["worktree", "ssh-host"].includes(environment.kind)) {
+    if (environment.pluginId !== pluginId || !["worktree", "ssh-host", "container", "remote-container"].includes(environment.kind)) {
       return { text: `This card runs in ${environment.label}, which another plugin manages; it cannot be collected here.`, ok: false };
     }
     if (running.has(session.id)) return { text: "This card's changes are being collected already.", ok: false };
     running.add(session.id);
     try {
-      const result = environment.kind === "worktree" ? await collectFromWorktree(session) : await collectFromServer(session);
+      if (environment.kind === "container" && environment.ref?.mode === "project") {
+        return { text: "This container works on the project folder itself: its changes are already there, so there is nothing to collect.", ok: true, state: "in-place" };
+      }
+      const result = environment.kind === "worktree" ? await collectFromWorktree(session)
+        : environment.kind === "container" ? await collectFromContainer(session)
+          : environment.kind === "remote-container" ? await collectFromRemoteContainer(session) : await collectFromServer(session);
       const lines = [result.message];
-      if (result.excluded?.length) lines.push(`Left out as credentials: ${result.excluded.slice(0, 10).join(", ")}.`);
+      if (result.excluded?.length) lines.push(`Left out (credential files) ${result.excluded.slice(0, 10).join(", ")}.`);
       if (result.diffstat) lines.push(result.diffstat);
       return { text: lines.join("\n"), ok: true, state: result.state, branch: result.branch };
     } catch (error) {
@@ -42,6 +47,19 @@ export function createResults({ pluginId, dataDir, transports = {}, timeoutMs = 
     if (!dir.startsWith(worktreesRoot + sep) || typeof ref.repo !== "string") throw new CollectionRefusal("This worktree does not belong to the plugin.");
     return collectWorktree({ sessionId: session.id, title: session.title, sourceFolder: ref.repo, worktreeFolder: dir, baseCommit: ref.base,
       ...(transports.local ? { transport: transports.local } : {}), timeoutMs });
+  }
+
+  /** A container's owned copy is a worktree of the local repository (the container module's ref keeps its ref). */
+  function collectFromContainer(session) {
+    const ref = session.environment.ref ?? {};
+    return collectFromWorktree({ ...session, environment: { ...session.environment, ref: ref.worktree ?? {} } });
+  }
+
+  function collectFromRemoteContainer(session) {
+    const ref = session.environment.ref ?? {};
+    if (!ref.host || typeof ref.workspace !== "string" || typeof ref.localFolder !== "string") throw new CollectionRefusal("This card's container ref is unreadable.");
+    const transport = (transports.remote ?? sshTransport)(ref.host);
+    return collectRemote({ sessionId: session.id, title: session.title, localFolder: ref.localFolder, remoteFolder: ref.workspace, transport, timeoutMs });
   }
 
   function collectFromServer(session) {

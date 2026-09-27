@@ -36,9 +36,7 @@ export async function checkRemoteFolder(host, remoteFolder, { timeoutMs, ssh } =
 }
 
 export function createSshHostEnvironment({ dataDir, readHosts, ssh = "ssh", checkTimeoutMs = 8_000 }) {
-  // Folders that exist only on this computer: arguments naming them are not passed to a remote agent.
-  const localRoots = [...new Set([homedir(), tmpdir(), safeRealpath(tmpdir()), "/private/var/folders", "/var/folders",
-    dirname(dirname(dataDir)), appRoot(process.execPath)].filter(Boolean))];
+  const localRoots = localRootsFor(dataDir);
 
   const refOf = (ref) => {
     if (!ref || typeof ref !== "object" || typeof ref.remoteFolder !== "string" || !ref.host) throw new Error("This card's server ref is unreadable.");
@@ -81,6 +79,12 @@ export function createSshHostEnvironment({ dataDir, readHosts, ssh = "ssh", chec
       return { label: `ssh ${host.label}`, detail: `${destination} ${remoteFolder}` };
     }
   };
+}
+
+/** Folders that exist only on this computer: arguments naming them are not passed to a remote or container agent. */
+export function localRootsFor(dataDir) {
+  return [...new Set([homedir(), tmpdir(), safeRealpath(tmpdir()), "/private/var/folders", "/var/folders",
+    dirname(dirname(dataDir)), appRoot(process.execPath)].filter(Boolean))];
 }
 
 function safeRealpath(path) {

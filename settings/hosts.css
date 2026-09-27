@@ -11,3 +11,6 @@ h1 { font-size: 15px; margin: 0 0 4px; }
 .hosts__form input { font: inherit; padding: 4px 6px; }
 .hosts__form button { align-self: end; }
 .hosts__status { grid-column: 1 / -1; min-height: 1.4em; }
+.section { margin-top: 18px; }
+.hosts__form select { font: inherit; padding: 3px 4px; }
+.hosts__form .wide { grid-column: 1 / -1; }

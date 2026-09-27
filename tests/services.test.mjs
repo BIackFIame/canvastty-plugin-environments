@@ -69,7 +69,7 @@ test("the manifest's coreFiles and module files match the package bytes (what th
 test("the manifest passes CanvasTTY's own validator (when CANVASTTY_REPO points at a checkout)", { skip: !process.env.CANVASTTY_REPO }, async () => {
   const { validatePluginManifest } = await import(join(process.env.CANVASTTY_REPO, "src/main/services/PluginManager.ts"));
   const manifest = validatePluginManifest(JSON.parse(readFileSync(join(root, "canvastty.plugin.json"), "utf8")));
-  assert.deepEqual(manifest.services.map((service) => service.id), ["worktree", "ssh-host", "results"]);
+  assert.deepEqual(manifest.services.map((service) => service.id), ["worktree", "ssh-host", "container", "remote-container", "results"]);
 });
 
 test("ssh-host service: hosts from plugin storage, prepare checks the folder, wrap is ssh -tt, resume reports why", async (t) => {
@@ -144,4 +144,29 @@ test("results service: the card action and the orchestrator tool collect only th
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.match((await call({ sessionId: "new-child" })).content, /already there/u);
   await assert.rejects(service.request("canvastty.tools.call", { tool: "other", caller: orchestrator, input: {} }), /Unknown tool/u);
+});
+
+test("container services over JSON-RPC: refusals name what to fix; the capsule tool and actions answer from the results service", async (t) => {
+  const local = await repo(t, "local");
+  let settings = null;
+  const storage = { "storage.get": ({ key }) => (key === "containers" ? settings : key === "hosts" ? [] : null) };
+  const container = startService(t, "container", { dataDir: await temp(t, "data"), host: storage });
+  const prepare = (service, kind, options = {}) => service.request("canvastty.environment.prepare", { sessionId: "s1", kind, provider: "terminal", cwd: local, options });
+  assert.match((await prepare(container, "container")).refuse.reason, /No container image is set/u);
+  settings = { image: "bad image" };
+  assert.match((await prepare(container, "container", { image: "bad image" })).refuse.reason, /not a valid image name/u);
+  const remote = startService(t, "remote-container", { dataDir: await temp(t, "data"), host: storage });
+  assert.match((await prepare(remote, "remote-container")).refuse.reason, /No server is configured yet/u);
+  await assert.rejects(container.request("canvastty.environment.resume", { sessionId: "s1", ref: { name: "x" } }), /unreadable/u);
+
+  settings = { image: "img:1" };
+  const results = startService(t, "results", { dataDir: await temp(t, "data"),
+    host: { ...storage, "sessions.subscribe": () => ({ sessions: [] }), "cards.setBadge": () => null } });
+  const card = { id: "c1", provider: "terminal", role: "orchestrator", title: "Mine", status: "running", cwd: local, workingDirectory: local, startedAt: 1 };
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const tool = await results.request("canvastty.tools.call", { tool: "capsule", caller: card, input: { action: "run" } });
+  assert.deepEqual(tool, { content: "No check command is set: add one in the plugin's Settings (Containers → Check command), for example `npm test`.", isError: true });
+  const applied = await results.request("canvastty.cards.invoke", { actionId: "capsule-apply", sessionId: "c1", session: card });
+  assert.equal(applied.tone, "error");
+  assert.match(applied.message, /no capsule check yet/u);
 });

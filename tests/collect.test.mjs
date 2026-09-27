@@ -97,7 +97,7 @@ test("a worktree card: its working tree becomes a branch; the worktree's HEAD an
   const answer = await results.collect(session({ pluginId: "canvastty-environments", kind: "worktree", label: "w", ref: prepared.ref }));
   assert.ok(answer.ok, answer.text);
   assert.equal(answer.branch, "canvastty/77aa88bb-feature");
-  assert.match(answer.text, /Left out as credentials: \.env\.local/u);
+  assert.match(answer.text, /Left out \(credential files\) \.env\.local/u);
   assert.equal(git(local, "show", `${answer.branch}:feature.txt`), "work");
   assert.deepEqual(snapshot(prepared.ref.dir), before);
   assert.equal(git(local, "branch", "--show-current"), "main");

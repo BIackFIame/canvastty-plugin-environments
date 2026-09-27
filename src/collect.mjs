@@ -16,6 +16,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isCredentialPath } from "./credentials.mjs";
+import { isMarkerPath } from "./engine.mjs";
 import { sshBatchArgs, shellQuote } from "./hosts.mjs";
 
 /** A collection the same request cannot pass on retry: not a Git folder, unrelated history, committed credentials… */
@@ -84,6 +85,20 @@ g update-ref "$ref" "$tip" || exit 9
 g bundle create --quiet - "$ref" "^$base" || exit 11
 `;
 
+/** $1 folder; stdin: NUL-separated pathspecs. Commits the working tree with a temporary index (HEAD and the agent's
+ *  own index stay) and prints "<head> <tip>"; tip is head when nothing changed. Used for capsule checks. */
+export const SNAPSHOT = PRELUDE + String.raw`work=$(mktemp -d "${"${TMPDIR:-/tmp}"}/canvastty-capsule.XXXXXX") || exit 7
+trap 'rm -rf "$work"' EXIT
+trap 'exit 1' HUP INT TERM
+GIT_INDEX_FILE=$work/index g read-tree "$head" || exit 9
+GIT_INDEX_FILE=$work/index g add -A --pathspec-from-file=- --pathspec-file-nul || exit 9
+tree=$(GIT_INDEX_FILE=$work/index g write-tree) || exit 9
+if [ "$tree" = "$(g rev-parse "$head^{tree}")" ]; then tip=$head
+else tip=$(GIT_AUTHOR_NAME=CanvasTTY GIT_AUTHOR_EMAIL=canvastty@localhost GIT_COMMITTER_NAME=CanvasTTY GIT_COMMITTER_EMAIL=canvastty@localhost g commit-tree "$tree" -p "$head" -m 'CanvasTTY: capsule snapshot of an agent working tree') || exit 9
+fi
+echo "$head $tip"
+`;
+
 const REFUSALS = {
   "no-folder": "The agent's folder no longer exists there.",
   "not-git": "The agent's folder is not a Git repository, so its changes cannot be collected (only Git working copies are collected, never arbitrary files).",
@@ -93,7 +108,7 @@ const REFUSALS = {
   "base-moved": "The agent's repository no longer contains the commit it started from."
 };
 
-function refusal(run, what) {
+export function refusal(run, what) {
   if (run.timedOut) return new Error(`${what} did not finish in time.`);
   const code = run.stderr.match(/CTTY_ERR ([a-z-]+)/u)?.[1];
   if (code && REFUSALS[code]) return new CollectionRefusal(REFUSALS[code]);
@@ -140,7 +155,7 @@ function cleanEnvironment() {
 }
 
 /** Git in the person's own repository: only read, or add a new ref; none of its hooks or fsmonitor run. */
-function git(cwd, args, { input, timeoutMs = 30_000 } = {}) {
+export function git(cwd, args, { input, timeoutMs = 30_000 } = {}) {
   const command = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotepath=false", "-C", cwd, ...args];
   return new Promise((resolve, reject) => {
     const child = execFile("git", command, { env: cleanEnvironment(), timeout: Math.max(1, timeoutMs), maxBuffer: 16 * 1024 * 1024, encoding: "utf8" },
@@ -156,7 +171,7 @@ export function collectionBranchName(sessionId, title) {
   return `canvastty/${id}${slug ? `-${slug}` : ""}`;
 }
 
-async function freeBranch(repository, name) {
+export async function freeBranch(repository, name) {
   for (let attempt = 1; attempt <= 99; attempt++) {
     const candidate = attempt === 1 ? name : `${name}-${attempt}`;
     try {
@@ -169,7 +184,7 @@ async function freeBranch(repository, name) {
   throw new CollectionRefusal(`Branches ${name} … ${name}-99 already exist; delete old collections first.`);
 }
 
-async function localRepository(folder) {
+export async function localRepository(folder) {
   try {
     return (await git(folder, ["rev-parse", "--show-toplevel"])).replace(/\n$/u, "");
   } catch {
@@ -186,13 +201,15 @@ function splitCollected(stdout) {
   return { paths, rest: stdout.subarray(newline + 1 + length) };
 }
 
-/** Pathspecs for the commit: everything, except the credential files among the paths it would change. */
-function pathspecs(changed) {
+/** Pathspecs for the commit: everything, except the credential files among the paths it would change (and a
+ *  container's start marker, which is never work). */
+export function pathspecs(changed) {
   const excluded = [...new Set(changed.filter((path) => isCredentialPath(path)))].sort();
-  return { input: Buffer.from([".", ...excluded.map((path) => `:(exclude,literal)${path}`)].join("\0") + "\0", "utf8"), excluded };
+  const markers = changed.filter((path) => isMarkerPath(path));
+  return { input: Buffer.from([".", ...[...excluded, ...markers].map((path) => `:(exclude,literal)${path}`)].join("\0") + "\0", "utf8"), excluded };
 }
 
-async function inspect(transport, folder, budget) {
+export async function inspect(transport, folder, budget) {
   const run = await transport(INSPECT, [folder], Buffer.alloc(0), budget());
   if (run.code !== 0) throw refusal(run, "Reading the agent's folder");
   if (run.stdout.length > MAX_INSPECT_BYTES) throw new CollectionRefusal("The agent's folder has too many changed files to collect.");
@@ -211,14 +228,14 @@ async function summary(repository, base, tip, budget) {
   return { commits, diffstat };
 }
 
-function refuseCredentials(paths) {
+export function refuseCredentials(paths) {
   const found = paths.filter((path) => isCredentialPath(path));
   if (found.length) {
     throw new CollectionRefusal(`The agent committed files that look like credentials (${found.slice(0, 5).join(", ")}${found.length > 5 ? ", …" : ""}); nothing was collected. Remove them from its commits first.`);
   }
 }
 
-const budgetFrom = (timeoutMs) => {
+export const budgetFrom = (timeoutMs) => {
   const deadline = Date.now() + timeoutMs;
   return () => {
     const left = deadline - Date.now();
