@@ -55,8 +55,8 @@ function render() {
   }
 }
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
+// The page runs in a sandboxed frame without allow-forms, so the form is never submitted: the button saves.
+async function save() {
   const data = Object.fromEntries(new FormData(form));
   const label = String(data.label).trim();
   const existing = hosts.find((entry) => entry.label.toLowerCase() === label.toLowerCase());
@@ -75,6 +75,11 @@ form.addEventListener("submit", async (event) => {
   await host.storage.set("hosts", hosts);
   render();
   say(`Saved ${label}.`);
+}
+
+form.addEventListener("submit", (event) => event.preventDefault());
+document.querySelector("#save").addEventListener("click", () => {
+  save().catch((error) => say(`Not saved: ${error.message}`));
 });
 
 load().catch((error) => say(`Could not load servers: ${error.message}`));

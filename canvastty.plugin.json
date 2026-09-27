@@ -53,13 +53,13 @@
         },
         {
           "path": "settings/hosts.html",
-          "bytes": 1505,
-          "sha256": "0d5b80e16b8181c821609220ea4ad8252599d41d8132148475183be51642b76d"
+          "bytes": 1526,
+          "sha256": "c8fe4590546558564c4e1b51537e92d5fdc881138492d90cd0875754605af0cd"
         },
         {
           "path": "settings/hosts.js",
-          "bytes": 6358,
-          "sha256": "2f603d3e57cc10c4d64bc26c5ec17bee54a0754de75e58a5f769087a2dceed24"
+          "bytes": 6510,
+          "sha256": "3a9f489890de85955078df1f1055de18ed0c23de3b8588e633e9762fe8031592"
         },
         {
           "path": "settings/hosts.css",

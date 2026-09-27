@@ -106,8 +106,7 @@
       list.append(empty);
     }
   }
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  async function save() {
     const data = Object.fromEntries(new FormData(form));
     const label = String(data.label).trim();
     const existing = hosts.find((entry) => entry.label.toLowerCase() === label.toLowerCase());
@@ -126,6 +125,10 @@
     await host.storage.set("hosts", hosts);
     render();
     say(`Saved ${label}.`);
+  }
+  form.addEventListener("submit", (event) => event.preventDefault());
+  document.querySelector("#save").addEventListener("click", () => {
+    save().catch((error) => say(`Not saved: ${error.message}`));
   });
   load().catch((error) => say(`Could not load servers: ${error.message}`));
 })();
