@@ -1,0 +1,191 @@
+{
+  "apiVersion": 2,
+  "id": "canvastty-environments",
+  "name": "CanvasTTY Environments",
+  "version": "0.1.0",
+  "description": "Where a card runs: its own git worktree or a server over ssh, and Collect changes to bring the work home as a local branch.",
+  "description.ru": "Где работает окно: в своём git worktree или на сервере по ssh, и «Collect changes», чтобы забрать работу домой локальной веткой.",
+  "author": "CanvasTTY contributors",
+  "permissions": [],
+  "coreFiles": [
+    {
+      "path": "README.md",
+      "bytes": 3201,
+      "sha256": "1cedd3d245b5d16d8cbb5fa0448b8b094e6dd7288cb6417bccc9dd969a1bbc24"
+    },
+    {
+      "path": "README.ru.md",
+      "bytes": 4593,
+      "sha256": "9c49b961b1f2cc519251e8d1f4356f0fc081b24c9c7fd91679e84d92ec97cc3f"
+    }
+  ],
+  "modules": [
+    {
+      "id": "worktree",
+      "title": "Git worktree",
+      "description": "Runs a card in its own git worktree (a branch in its own folder, in the plugin's data folder); removed on close unless you keep it.",
+      "defaultSelected": true,
+      "permissions": [
+        "environment:provide"
+      ],
+      "files": [
+        {
+          "path": "services/worktree.mjs",
+          "bytes": 6301,
+          "sha256": "91ed64388cd5776a5ba90542c879dcb9eb6af7990f95082eb2e841ec3ef86233"
+        }
+      ]
+    },
+    {
+      "id": "ssh-host",
+      "title": "SSH server",
+      "description": "Runs a card on a server you configure (label, ssh alias or host, user, folder mapping) through your own ssh config and agent. No keys are stored.",
+      "defaultSelected": true,
+      "permissions": [
+        "environment:provide",
+        "storage"
+      ],
+      "files": [
+        {
+          "path": "services/ssh-host.mjs",
+          "bytes": 14457,
+          "sha256": "8309b33f0571b41a5ac3bdbd996e493368cccd2c656f2b4ce02f8acffc86e117"
+        },
+        {
+          "path": "settings/hosts.html",
+          "bytes": 1505,
+          "sha256": "0d5b80e16b8181c821609220ea4ad8252599d41d8132148475183be51642b76d"
+        },
+        {
+          "path": "settings/hosts.js",
+          "bytes": 6358,
+          "sha256": "2f603d3e57cc10c4d64bc26c5ec17bee54a0754de75e58a5f769087a2dceed24"
+        },
+        {
+          "path": "settings/hosts.css",
+          "bytes": 864,
+          "sha256": "9154b4d3f32321c49a871bc2233d830c8a5acd23663f6d24257f856376143ba8"
+        }
+      ]
+    },
+    {
+      "id": "results",
+      "title": "Collect changes",
+      "description": "Card action and orchestrator tool that bring a worktree or server card's work home as a new local branch; nothing is merged.",
+      "defaultSelected": true,
+      "permissions": [
+        "tools:agents",
+        "cards:decorate",
+        "sessions:events"
+      ],
+      "files": [
+        {
+          "path": "services/results.mjs",
+          "bytes": 26500,
+          "sha256": "fe8e0f7f9de05f1c2585dc58daf845f5911930ddf321778624741d143767c6cf"
+        }
+      ]
+    }
+  ],
+  "services": [
+    {
+      "id": "worktree",
+      "title": "Git worktree",
+      "description": "Creates, reopens and removes git worktrees for cards started in this environment.",
+      "entry": "services/worktree.mjs",
+      "module": "worktree",
+      "environments": [
+        {
+          "kind": "worktree",
+          "label": "Git worktree",
+          "description": "A branch in its own folder; the project folder stays untouched.",
+          "fields": [
+            {
+              "key": "branch",
+              "label": "Branch (empty: canvastty/<card>)",
+              "kind": "text",
+              "default": "",
+              "maxLength": 80
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ssh-host",
+      "title": "SSH server",
+      "description": "Runs cards on a configured server over ssh; checks the server is reachable before starting and on restore.",
+      "entry": "services/ssh-host.mjs",
+      "module": "ssh-host",
+      "environments": [
+        {
+          "kind": "ssh-host",
+          "label": "SSH server",
+          "description": "Runs on a server from the plugin's settings, in the folder mapped to this project.",
+          "fields": [
+            {
+              "key": "host",
+              "label": "Server (empty: the first one)",
+              "kind": "text",
+              "default": "",
+              "maxLength": 40
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "results",
+      "title": "Collect changes",
+      "description": "Brings a worktree or server card's changes home as a local branch.",
+      "entry": "services/results.mjs",
+      "module": "results",
+      "tools": [
+        {
+          "name": "collect",
+          "description": "Bring the changes of one of your subagents (or your own card) that runs in a worktree or on an ssh server home as a new local branch canvastty/<id>-<title>. Credential files are left out; nothing is merged and the current branch is not touched. Collect each finished subagent, then merge the branches.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "sessionId": {
+                "type": "string",
+                "description": "A subagent of yours; omit for your own card."
+              }
+            },
+            "additionalProperties": false
+          },
+          "roles": [
+            "orchestrator"
+          ]
+        }
+      ],
+      "cardActions": [
+        {
+          "id": "collect-changes",
+          "title": "Collect changes",
+          "when": {
+            "environmentKinds": [
+              "worktree",
+              "ssh-host"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "contributions": [
+    {
+      "id": "servers",
+      "kind": "canvas-app",
+      "title": "Servers",
+      "description": "Servers and folder mappings for the ssh-host environment.",
+      "entry": "settings/hosts.html",
+      "module": "ssh-host",
+      "defaultSize": {
+        "width": 680,
+        "height": 480
+      }
+    }
+  ],
+  "settingsContribution": "servers"
+}

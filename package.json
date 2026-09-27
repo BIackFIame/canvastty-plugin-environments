@@ -1,0 +1,14 @@
+{
+  "name": "canvastty-environments",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CanvasTTY plugin: worktree and ssh-host environments, and Collect changes.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

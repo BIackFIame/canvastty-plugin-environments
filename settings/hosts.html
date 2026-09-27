@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./hosts.css">
+    <title>Servers</title>
+  </head>
+  <body>
+    <main class="hosts">
+      <h1>Servers for the ssh-host environment</h1>
+      <p class="hint">No keys are stored here: ssh uses your own ssh config and agent. A card runs in the server folder mapped to its project folder.</p>
+      <ul id="list" class="hosts__list" aria-live="polite"></ul>
+      <form id="form" class="hosts__form">
+        <label>Label <input name="label" required maxlength="40" placeholder="build-box"></label>
+        <label>SSH host or alias <input name="sshHost" required maxlength="253" placeholder="build-box or 10.0.0.5"></label>
+        <label>User (optional) <input name="sshUser" maxlength="64" placeholder="from your ssh config"></label>
+        <label>Port (optional) <input name="sshPort" inputmode="numeric" maxlength="5" placeholder="22"></label>
+        <label>Folder on this computer <input name="localPath" required placeholder="/Users/me/project"></label>
+        <label>Folder on the server <input name="remotePath" required placeholder="/srv/project"></label>
+        <button type="submit">Add or update server</button>
+        <output id="status" class="hosts__status"></output>
+      </form>
+    </main>
+    <script src="canvastty-plugin://host/sdk.js"></script>
+    <script src="./hosts.js"></script>
+  </body>
+</html>
