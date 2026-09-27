@@ -1,5 +1,7 @@
 # CanvasTTY Environments
 
+> **Status: preview.** This plugin needs CanvasTTY plugin API v2 (plugin services, launch contributors, session environments, decision hooks, plugin tools and card actions). Those extension points are proposed upstream and are not in a released CanvasTTY yet, so installing it on a current release fails the manifest check.
+
 A CanvasTTY plugin (manifest apiVersion 2) that decides **where a card runs** and brings the work home.
 [Русская версия](README.ru.md).
 
