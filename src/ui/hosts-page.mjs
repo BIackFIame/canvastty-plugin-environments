@@ -2,7 +2,7 @@
 // container settings. Both live in the plugin's own storage; the services validate them again before every use, so
 // this page only helps the person get them right.
 import { CONTAINER_DEFAULTS, CONTAINER_SETTINGS_KEY, containerSettingsInvalidReason, normalizeContainerSettings } from "../containerSettings.mjs";
-import { hostInvalidReason, normalizeHosts } from "../hosts.mjs";
+import { MAX_HOSTS, hostInvalidReason, normalizeHosts } from "../hosts.mjs";
 
 const host = window.CanvasTTYPlugin;
 const list = document.querySelector("#list");
@@ -18,7 +18,7 @@ async function load() {
 }
 
 function render() {
-  list.replaceChildren(...hosts.map((entry, index) => {
+  list.replaceChildren(...hosts.map((entry) => {
     const item = document.createElement("li");
     const name = document.createElement("strong");
     name.textContent = entry.label;
@@ -42,8 +42,14 @@ function render() {
     remove.type = "button";
     remove.textContent = "Remove";
     remove.addEventListener("click", async () => {
-      hosts = hosts.filter((_, other) => other !== index);
-      await host.storage.set("hosts", hosts);
+      // By label (unique per list), not by position: the list may have changed since this row was drawn.
+      const next = hosts.filter((other) => other.label.toLowerCase() !== entry.label.toLowerCase());
+      try {
+        await host.storage.set("hosts", next);
+      } catch (error) {
+        return say(`Not removed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      hosts = next;
       render();
       say(`Removed ${entry.label}.`);
     });
@@ -73,8 +79,11 @@ async function save() {
   };
   const problem = hostInvalidReason(candidate);
   if (problem) return say(`Not saved: ${problem}.`);
-  hosts = [...hosts.filter((entry) => entry !== existing), candidate];
-  await host.storage.set("hosts", hosts);
+  // The services read at most MAX_HOSTS servers; one more would be saved but never used.
+  if (!existing && hosts.length >= MAX_HOSTS) return say(`Not saved: at most ${MAX_HOSTS} servers; remove one first.`);
+  const next = [...hosts.filter((entry) => entry !== existing), candidate];
+  await host.storage.set("hosts", next);
+  hosts = next;
   render();
   say(`Saved ${label}.`);
 }

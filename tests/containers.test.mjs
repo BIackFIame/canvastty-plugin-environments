@@ -149,6 +149,30 @@ test("local container: a failing bootstrap or a slow failing create cleans up be
   assert.match((await noEngine.prepare({ sessionId: SID, provider: "terminal", cwd: local, options: {} })).refuse.reason, /No container engine can be used|Podman/);
 });
 
+test("local container: a second prepare of the same card while the first runs is refused; the card keeps exactly its own container", async (t) => {
+  const local = await repo(t, "project");
+  const dataDir = await temp(t, "data");
+  const fake = fakeEngine({ createDelayMs: 80 });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const env = createContainerEnvironment({ dataDir, readSettings: async () => { await gate; return { image: "img:1" }; }, detect: fake.detect, run: fake.run, attach: fake.attach });
+  const first = env.prepare({ sessionId: SID, provider: "terminal", cwd: local, options: {} });
+  const second = env.prepare({ sessionId: SID, provider: "terminal", cwd: local, options: {} });
+  release();
+  const results = await Promise.all([first, second]);
+  const prepared = results.filter((result) => result.ref);
+  assert.equal(prepared.length, 1, JSON.stringify(results));
+  assert.match(results.find((result) => result.refuse).refuse.reason, /already being prepared/);
+  assert.deepEqual([...fake.containers.keys()], [prepared[0].ref.containerId]);
+  // A release waits for a prepare in flight and then removes exactly that container.
+  const again = env.prepare({ sessionId: SID, provider: "terminal", cwd: local, options: { workspace: "project" } });
+  const released = env.release({ sessionId: SID, ref: prepared[0].ref, keepData: false });
+  const next = await again;
+  await released;
+  assert.ok(next.ref, JSON.stringify(next));
+  assert.equal(fake.containers.size, 0, "the release ran after the prepare it waited for");
+});
+
 test("remote container: probe, create (checked before start), start, exec over ssh -tt; a failed start cleans up after create", async (t) => {
   const dataDir = await temp(t, "data");
   const fake = fakeEngine();

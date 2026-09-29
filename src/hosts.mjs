@@ -116,6 +116,14 @@ export function remoteCommandLine({ provider, remoteFolder, command, args = [], 
 }
 
 /**
+ * The agent flags that take the next argument as their value and that CanvasTTY (or a plugin's launch contribution)
+ * points at files on this computer. Only these are removed with a value that is left out: any other flag before it is
+ * a switch of its own (`--strict-mcp-config`, `--verbose`) and stays.
+ */
+const LOCAL_VALUE_FLAGS = new Set(["--settings", "--mcp-config", "--mcp-config-file", "-c", "--config", "--append-system-prompt-file",
+  "--system-prompt-file", "--add-dir", "--plugin-dir"]);
+
+/**
  * CanvasTTY's own bridges (status hooks, browser and orchestration MCP) are files and sockets on this computer; the
  * server cannot use them. An argument that names one of the local folders, or is a JSON config, is left out, and so
  * is the flag right before it when that flag takes it as its value (`--settings <file>`, `-c key=<path>`).
@@ -130,8 +138,9 @@ export function remoteArgs(args, localRoots) {
       kept.push(word);
       continue;
     }
+    // `--settings=<file>` carries its own value; a separate value belongs to the value flag right before it.
     const previous = kept.at(-1);
-    if (previous !== undefined && /^-{1,2}[A-Za-z][\w-]*$/u.test(previous)) kept.pop();
+    if (!word.startsWith("-") && previous !== undefined && LOCAL_VALUE_FLAGS.has(previous)) kept.pop();
   }
   return kept;
 }

@@ -10,8 +10,15 @@ let results = null;
 let capsules = null;
 /** Cards CanvasTTY told us about (sessions:events): id -> summary. No screen text. */
 const sessions = new Map();
+/** Cards closed before the first list arrived: the list must not bring them back. */
+const closed = new Set();
 
 const badge = (callHost) => (sessionId, value) => callHost("cards.setBadge", { sessionId, badge: value });
+/** Settles once the first card list arrived (or could not be read): before that, "not your subagent" is not known. */
+let listed;
+let listing = true;
+const sessionsListed = new Promise((resolve) => { listed = resolve; });
+const LIST_WAIT_MS = 5_000;
 
 serve({
   onInitialize: async ({ pluginId, dataDir }, { callHost, log }) => {
@@ -20,14 +27,18 @@ serve({
       readSettings: async () => (await callHost("storage.get", { key: CONTAINER_SETTINGS_KEY })) ?? null });
     try {
       const { sessions: open } = await callHost("sessions.subscribe", {});
-      for (const session of open) sessions.set(session.id, session);
+      // Cards an event already reported are newer than the list.
+      for (const session of open) if (!sessions.has(session.id) && !closed.has(session.id)) sessions.set(session.id, session);
     } catch (error) {
       log("warn", `sessions.subscribe failed: ${error.message}`);
+    } finally {
+      listing = false; closed.clear();
+      listed();
     }
   },
   notifications: {
     "canvastty.sessions.event": ({ type, session }) => {
-      if (type === "closed") sessions.delete(session.id);
+      if (type === "closed") { sessions.delete(session.id); if (listing) closed.add(session.id); }
       else sessions.set(session.id, session);
     }
   },
@@ -37,6 +48,8 @@ serve({
       if (!results) throw new Error("The results service is starting; try again.");
       let target = caller;
       if (input.sessionId !== undefined && input.sessionId !== caller.id) {
+        const known = await Promise.race([sessionsListed.then(() => true), new Promise((resolve) => setTimeout(resolve, LIST_WAIT_MS, false))]);
+        if (!known) return { content: "The list of cards is still loading; try again in a moment.", isError: true };
         target = sessions.get(input.sessionId);
         // Only the caller's own subagents: CanvasTTY vouches for the caller, the plugin enforces this rule.
         if (!target || target.parentSessionId !== caller.id) return { content: "That session is not one of your subagents.", isError: true };

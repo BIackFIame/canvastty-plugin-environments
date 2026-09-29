@@ -95,7 +95,15 @@ export function sections(text) {
 }
 
 export function createRemoteContainerEnvironment({ dataDir, readSettings, readHosts, transportFor = (host) => sshTransport(host) }) {
-  const pending = new Map();
+  /** The prepare or release running for a card; the next one waits for it (as in the local container environment). */
+  const ops = new Map();
+  const preparing = new Set();
+  const exclusive = (sessionId, run) => {
+    const task = (ops.get(sessionId) ?? Promise.resolve()).catch(() => undefined).then(run);
+    ops.set(sessionId, task);
+    task.catch(() => undefined).finally(() => { if (ops.get(sessionId) === task) ops.delete(sessionId); });
+    return task;
+  };
   const localRoots = localRootsFor(dataDir);
 
   async function script(host, text, args, timeoutMs, what) {
@@ -187,12 +195,12 @@ export function createRemoteContainerEnvironment({ dataDir, readSettings, readHo
 
   return {
     async prepare(params) {
-      const task = doPrepare(params);
-      pending.set(params.sessionId, task);
+      if (preparing.has(params.sessionId)) return { refuse: { reason: "This card's container is already being prepared." } };
+      preparing.add(params.sessionId);
       try {
-        return await task;
+        return await exclusive(params.sessionId, () => doPrepare(params));
       } finally {
-        if (pending.get(params.sessionId) === task) pending.delete(params.sessionId);
+        preparing.delete(params.sessionId);
       }
     },
 
@@ -216,9 +224,10 @@ export function createRemoteContainerEnvironment({ dataDir, readSettings, readHo
 
     async release({ sessionId, ref, keepData }) {
       const r = owned(ref);
-      await pending.get(sessionId)?.catch(() => undefined);
-      await script(r.host, RELEASE, [r.engine, sessionId, keepData ? "1" : "0", r.mode, r.top || r.workspace, r.workspace, r.branch], 9_500, "Removing the container");
-      return {};
+      return exclusive(sessionId, async () => {
+        await script(r.host, RELEASE, [r.engine, sessionId, keepData ? "1" : "0", r.mode, r.top || r.workspace, r.workspace, r.branch], 9_500, "Removing the container");
+        return {};
+      });
     },
 
     describe({ ref }) {

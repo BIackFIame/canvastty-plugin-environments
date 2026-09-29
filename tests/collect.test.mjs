@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { collectRemote, collectWorktree, collectionBranchName, sshTransport } from "../src/collect.mjs";
+import { collectRemote, collectWorktree, collectionBranchName, inspect, sshTransport } from "../src/collect.mjs";
 import { isCredentialPath } from "../src/credentials.mjs";
 import { createResults } from "../src/results.mjs";
 import { createWorktreeEnvironment } from "../src/worktree.mjs";
@@ -111,4 +111,34 @@ test("a worktree card: its working tree becomes a branch; the worktree's HEAD an
   await assert.rejects(collectWorktree({ sessionId: "x", title: "x", sourceFolder: local, worktreeFolder: prepared.ref.dir, baseCommit: "HEAD" }), /starting commit/u);
   await worktree.release({ ref: prepared.ref, keepData: false });
   assert.equal(git(local, "worktree", "list").split("\n").length, 1);
+});
+
+test("a changed file name that is not UTF-8 is refused, not turned into a pathspec that misses it", async () => {
+  const commit = "a".repeat(40);
+  const stdout = Buffer.concat([Buffer.from(`${commit}\n--\n`), Buffer.from("ok.txt\0"), Buffer.from([0x73, 0x65, 0x63, 0xff, 0x2f, 0x2e, 0x65, 0x6e, 0x76, 0x00])]);
+  const transport = async () => ({ code: 0, stdout, stderr: "", timedOut: false });
+  await assert.rejects(inspect(transport, "/w", () => 1_000), /not valid UTF-8/u);
+  const good = async () => ({ code: 0, stdout: Buffer.from(`${commit}\n--\nok.txt\0`), stderr: "", timedOut: false });
+  assert.deepEqual((await inspect(good, "/w", () => 1_000)).changed, ["ok.txt"]);
+});
+
+test("worktree ownership is by real path and registration: a link, a nested folder or a stranger in the data folder is refused", async (t) => {
+  const local = await repo(t, "local");
+  const outside = await repo(t, "outside");
+  const dataDir = await temp(t, "data");
+  const worktree = createWorktreeEnvironment({ dataDir });
+  const prepared = await worktree.prepare({ sessionId: "99cc00dd-1", cwd: local, options: {} });
+  const root = join(dataDir, "worktrees");
+  await symlink(outside, join(root, "link-out"));
+  await mkdir(join(root, "plain", "nested"), { recursive: true });
+  const results = createResults({ pluginId: "canvastty-environments", dataDir });
+  for (const dir of [join(root, "link-out"), join(root, "plain", "nested")]) {
+    await assert.rejects(worktree.release({ ref: { ...prepared.ref, dir }, keepData: false }), /does not belong/u, dir);
+    const answer = await results.collect({ id: "99cc00dd-1", title: "x", environment: { pluginId: "canvastty-environments", kind: "worktree", label: "w", ref: { ...prepared.ref, dir } } });
+    assert.match(answer.text, /does not belong to the plugin/u, dir);
+  }
+  // A real folder of the plugin that is not a worktree of the ref's repository is not removed through it.
+  await assert.rejects(worktree.release({ ref: { ...prepared.ref, dir: join(root, "plain") }, keepData: false }), /not one of its repository's worktrees/u);
+  assert.equal(git(outside, "status", "--porcelain"), "");
+  await worktree.release({ ref: prepared.ref, keepData: false });
 });

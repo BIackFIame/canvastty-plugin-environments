@@ -1,55 +1,133 @@
 // The CanvasTTY service protocol: newline-delimited JSON-RPC 2.0 over stdin/stdout.
 // The host sends canvastty.initialize first, then requests; the service may call the host back (storage, sessions…).
-import { createInterface } from "node:readline";
+// The transport is bounded both ways: a frame above the frame limit is skipped without being held, host calls have a
+// deadline and an in-flight cap, requests beyond the handler cap are answered busy, and on shutdown or end of input
+// the handlers still running get a short drain to answer before the process exits.
+
+export const RPC_LIMITS = Object.freeze({
+  /** CanvasTTY caps service frames at 1 MiB in both directions. */
+  frameBytes: 1_048_576,
+  hostCallMs: 30_000,
+  hostCalls: 64,
+  activeHandlers: 64,
+  /** CanvasTTY waits 2 s after canvastty.shutdown before SIGTERM. */
+  drainMs: 1_500
+});
 
 /**
  * Runs one service. `methods` answers host requests; `notifications` gets host notifications
  * (canvastty.sessions.event…); `onInitialize` gets the initialize params and the host caller.
+ * `input`, `output`, `exit` and `limits` are for tests.
  */
-export function serve({ methods, notifications = {}, onInitialize }) {
+export function serve({ methods, notifications = {}, onInitialize, input = process.stdin, output = process.stdout, exit = (code) => process.exit(code), limits = {} }) {
+  const limit = { ...RPC_LIMITS, ...limits };
   const pending = new Map();
   let nextId = 1;
-  const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+  let active = 0;
+  let stopping = false;
+  let hostGone = false;
+  let onIdle = null;
+  const send = (message) => output.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
   const callHost = (method, params) => new Promise((resolve, reject) => {
+    if (hostGone) return reject(new Error("The host connection is closed."));
+    if (pending.size >= limit.hostCalls) return reject(new Error("Too many host calls in flight."));
     const id = nextId++;
-    pending.set(id, { resolve, reject });
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`The host did not answer ${method} in time.`)); }, limit.hostCallMs);
+    pending.set(id, { resolve, reject, timer });
     send({ id, method, params });
   });
   const log = (level, message) => send({ method: "log", params: { level, message: String(message).slice(0, 500) } });
+  const context = { callHost, log };
+  const errorText = (error) => String(error?.message ?? error);
+  /** Runs a handler, counted as active until it settles. */
+  const track = (run) => {
+    active++;
+    return Promise.resolve().then(run).finally(() => { active--; if (active === 0) onIdle?.(); });
+  };
+  /** Takes no new work, lets the running handlers answer (bounded), then exits. */
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    const timer = setTimeout(() => exit(0), limit.drainMs);
+    onIdle = () => { clearTimeout(timer); exit(0); };
+    if (active === 0) onIdle();
+  };
 
-  createInterface({ input: process.stdin }).on("line", (line) => {
+  const handle = (line) => {
     let message;
     try {
       message = JSON.parse(line);
     } catch {
       return;
     }
+    if (!message || typeof message !== "object" || Array.isArray(message)) return;
     if (message.method === "canvastty.initialize") {
-      Promise.resolve().then(() => onInitialize?.(message.params, { callHost, log }))
-        .catch((error) => log("error", `initialize failed: ${error.message}`));
+      Promise.resolve().then(() => onInitialize?.(message.params, context))
+        .catch((error) => log("error", `initialize failed: ${errorText(error)}`));
       return;
     }
-    if (message.method === "canvastty.shutdown") process.exit(0);
+    if (message.method === "canvastty.shutdown") return stop();
     if (typeof message.method === "string" && message.id === undefined) {
-      Promise.resolve().then(() => notifications[message.method]?.(message.params, { callHost, log }))
-        .catch((error) => log("warn", `${message.method}: ${error.message}`));
+      if (stopping) return;
+      if (active >= limit.activeHandlers) return log("warn", `${message.method}: dropped, the service is busy`);
+      const handler = Object.hasOwn(notifications, message.method) ? notifications[message.method] : undefined;
+      track(() => handler?.(message.params, context))
+        .catch((error) => log("warn", `${message.method}: ${errorText(error)}`));
       return;
     }
     if (typeof message.method === "string") {
-      const method = methods[message.method];
-      Promise.resolve().then(() => {
+      if (stopping || active >= limit.activeHandlers) {
+        send({ id: message.id, error: { code: -32000, message: stopping ? "The service is stopping." : "The service is busy; try again." } });
+        return;
+      }
+      const method = Object.hasOwn(methods, message.method) ? methods[message.method] : undefined;
+      track(() => {
         if (!method) throw Object.assign(new Error(`Unknown method: ${message.method}`), { code: -32601 });
-        return method(message.params ?? {}, { callHost, log });
+        return method(message.params ?? {}, context);
       }).then(
         (result) => send({ id: message.id, result: result ?? null }),
-        (error) => send({ id: message.id, error: { code: error.code ?? -32000, message: String(error.message).slice(0, 400) } })
+        (error) => send({ id: message.id, error: { code: error?.code ?? -32000, message: errorText(error).slice(0, 400) } })
       );
       return;
     }
-    const waiter = pending.get(message.id);
+    const waiter = typeof message.id === "number" ? pending.get(message.id) : undefined;
     if (!waiter) return;
     pending.delete(message.id);
-    if (message.error) waiter.reject(new Error(message.error.message));
+    clearTimeout(waiter.timer);
+    if (message.error) waiter.reject(new Error(typeof message.error.message === "string" ? message.error.message : "Host request failed."));
     else waiter.resolve(message.result);
-  }).on("close", () => process.exit(0));
+  };
+
+  // Lines are cut from raw bytes: a frame is kept as chunks and joined once at its newline; one that grows past the
+  // limit is dropped up to its newline without being held.
+  let chunks = [];
+  let size = 0;
+  let skipping = false;
+  const drop = () => { if (!skipping) log("warn", "Dropped a host message larger than the frame limit."); chunks = []; size = 0; };
+  input.on("data", (data) => {
+    let chunk = typeof data === "string" ? Buffer.from(data) : data;
+    for (let newline = chunk.indexOf(10); newline >= 0; newline = chunk.indexOf(10)) {
+      const part = chunk.subarray(0, newline);
+      chunk = chunk.subarray(newline + 1);
+      if (skipping || size + part.length > limit.frameBytes) { drop(); skipping = false; continue; }
+      const line = (chunks.length ? Buffer.concat([...chunks, part]) : part).toString("utf8");
+      chunks = [];
+      size = 0;
+      handle(line);
+    }
+    if (!chunk.length || skipping) return;
+    if (size + chunk.length > limit.frameBytes) { drop(); skipping = true; return; }
+    // A chunk can be a view into a larger pooled buffer; keep a copy of just this part.
+    chunks.push(Buffer.from(chunk));
+    size += chunk.length;
+  });
+  const closed = () => {
+    if (hostGone) return;
+    hostGone = true;
+    for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(new Error("The host connection closed.")); }
+    pending.clear();
+    stop();
+  };
+  input.on("end", closed);
+  input.on("error", closed);
 }

@@ -27,8 +27,8 @@
     },
     {
       "path": "settings/hosts.js",
-      "bytes": 10797,
-      "sha256": "36a52f3119f46af3271f5578ff09bc2ad93c179af8e79ad645691f0bd2d5bfe3"
+      "bytes": 11145,
+      "sha256": "b998b377aa770cc06adb730a2cb2d0f52c59cc474bf0a0b5560bbd75b10b92bc"
     },
     {
       "path": "settings/hosts.css",
@@ -48,8 +48,8 @@
       "files": [
         {
           "path": "services/worktree.mjs",
-          "bytes": 6301,
-          "sha256": "91ed64388cd5776a5ba90542c879dcb9eb6af7990f95082eb2e841ec3ef86233"
+          "bytes": 10574,
+          "sha256": "ffcb4f8954a2ac71b400f777f68443da82ad06f57a17e58f1f8d864717d96756"
         }
       ]
     },
@@ -65,8 +65,8 @@
       "files": [
         {
           "path": "services/ssh-host.mjs",
-          "bytes": 14526,
-          "sha256": "df7251e9184062e33ac8876c02045cd739502ca34de2e838e33d1c87b60916d7"
+          "bytes": 17947,
+          "sha256": "93d0bf47a1ef5eb769016875b4a1feb06a758096d23c98ad3a39e11742a72ce4"
         }
       ]
     },
@@ -82,8 +82,8 @@
       "files": [
         {
           "path": "services/container.mjs",
-          "bytes": 41322,
-          "sha256": "7ca3bc1d34a54ba20569b335edd0738d15002e71eb73b3c28d13e3e7df8c8858"
+          "bytes": 46330,
+          "sha256": "70f8a8a25625ec663612a3c50431d1f893279a0458afda3c285e092804628705"
         }
       ]
     },
@@ -99,8 +99,8 @@
       "files": [
         {
           "path": "services/remote-container.mjs",
-          "bytes": 43794,
-          "sha256": "8ce00a1f2b72ce28698eacff8f957cddd090ba2c0332b858aac4352c4553d2b0"
+          "bytes": 47652,
+          "sha256": "13fddff52bbe9f07e91694cdd09874768849725e1a10458f3d18efbbed600726"
         }
       ]
     },
@@ -118,8 +118,8 @@
       "files": [
         {
           "path": "services/results.mjs",
-          "bytes": 65544,
-          "sha256": "f25f2aca9aea69b9d0c87165866125d28b0c5744355d24b8ae601bfbe3095f3b"
+          "bytes": 71809,
+          "sha256": "61425f3ea6218bf97cae50dc744bdf056ba17b4a2475ea8c19471f57d3edc2c4"
         }
       ]
     }

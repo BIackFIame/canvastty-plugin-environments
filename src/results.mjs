@@ -1,8 +1,9 @@
 // The `results` module: "Collect changes" (card action) and the orchestrator tool `collect` bring a worktree, ssh-host,
 // container or remote-container card's work home as a local branch. It acts only on cards placed by this plugin's own
 // environments, and the tool only on the caller itself or the caller's own subagents.
-import { resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import { CollectionRefusal, collectRemote, collectWorktree, sshTransport } from "./collect.mjs";
+import { ownedWorktreeFolder, registeredWorktree } from "./worktree.mjs";
 
 /** CanvasTTY waits 15 s for a tool call or card action; the collection stops before that. */
 export const COLLECT_BUDGET_MS = 13_500;
@@ -41,10 +42,16 @@ export function createResults({ pluginId, dataDir, transports = {}, timeoutMs = 
     }
   }
 
-  function collectFromWorktree(session) {
+  async function collectFromWorktree(session) {
     const ref = session.environment.ref ?? {};
-    const dir = typeof ref.dir === "string" ? resolve(ref.dir) : "";
-    if (!dir.startsWith(worktreesRoot + sep) || typeof ref.repo !== "string") throw new CollectionRefusal("This worktree does not belong to the plugin.");
+    let dir;
+    try {
+      dir = ownedWorktreeFolder(worktreesRoot, ref.dir);
+      if (typeof ref.repo !== "string") throw new Error("no repository");
+      await registeredWorktree(ref.repo, dir);
+    } catch {
+      throw new CollectionRefusal("This worktree does not belong to the plugin.");
+    }
     return collectWorktree({ sessionId: session.id, title: session.title, sourceFolder: ref.repo, worktreeFolder: dir, baseCommit: ref.base,
       ...(transports.local ? { transport: transports.local } : {}), timeoutMs });
   }

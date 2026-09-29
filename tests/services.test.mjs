@@ -146,6 +146,20 @@ test("results service: the card action and the orchestrator tool collect only th
   await assert.rejects(service.request("canvastty.tools.call", { tool: "other", caller: orchestrator, input: {} }), /Unknown tool/u);
 });
 
+test("results service: a tool call for a subagent while the card list is still loading waits for it instead of refusing", async (t) => {
+  const local = await repo(t, "local");
+  let answerList;
+  const list = new Promise((resolve) => { answerList = resolve; });
+  const child = { id: "child-1", provider: "terminal", role: "agent", title: "Child", status: "running", exitCode: null, cwd: local, workingDirectory: local, startedAt: 1, parentSessionId: "orch" };
+  const service = startService(t, "results", { dataDir: await temp(t, "data"), host: { "sessions.subscribe": () => list, "cards.setBadge": () => null } });
+  const orchestrator = { ...child, id: "orch", role: "orchestrator", parentSessionId: undefined };
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const asked = service.request("canvastty.tools.call", { tool: "collect", caller: orchestrator, input: { sessionId: "child-1" } });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  answerList({ sessions: [child] });
+  assert.match((await asked).content, /already there/u);
+});
+
 test("container services over JSON-RPC: refusals name what to fix; the capsule tool and actions answer from the results service", async (t) => {
   const local = await repo(t, "local");
   let settings = null;

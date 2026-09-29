@@ -6,11 +6,12 @@
 // - resume: the same container: running → used; stopped → started again (same recipe, same workspace).
 // - release: the container is removed; the owned copy too, unless the person keeps the data.
 // Cleanup is fenced: nothing is looked up or removed while a create request may still be pending, and a card's
-// leftovers from a failed earlier attempt (found by its session label) are removed before a new create.
+// leftovers from a failed earlier attempt (found by its session label) are removed before a new create. A card's
+// prepare and release run one at a time, so the containers under its label are only ever its current attempt's.
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { rm, writeFile } from "node:fs/promises";
-import { basename, join, posix, relative, resolve, sep } from "node:path";
+import { basename, join, posix, relative, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { CONTAINER_SETTINGS_KEY, imageValid, normalizeContainerSettings } from "./containerSettings.mjs";
@@ -19,7 +20,7 @@ import {
 } from "./engine.mjs";
 import { remoteArgs } from "./hosts.mjs";
 import { localRootsFor } from "./sshHost.mjs";
-import { createWorktreeEnvironment } from "./worktree.mjs";
+import { createWorktreeEnvironment, ownedWorktreeFolder } from "./worktree.mjs";
 
 const PREPARE_BUDGET_MS = 12_500; // CanvasTTY waits 15 s for prepare
 const READY_MS = 8_000;
@@ -53,7 +54,15 @@ export function createContainerEnvironment({ dataDir, readSettings, detect = det
   const worktrees = createWorktreeEnvironment({ dataDir });
   const worktreesRoot = resolve(dataDir, "worktrees");
   const localRoots = localRootsFor(dataDir);
-  const pending = new Map();
+  /** The prepare or release running for a card; the next one waits for it. */
+  const ops = new Map();
+  const preparing = new Set();
+  const exclusive = (sessionId, run) => {
+    const task = (ops.get(sessionId) ?? Promise.resolve()).catch(() => undefined).then(run);
+    ops.set(sessionId, task);
+    task.catch(() => undefined).finally(() => { if (ops.get(sessionId) === task) ops.delete(sessionId); });
+    return task;
+  };
 
   /** Only refs this plugin wrote: a container name/id it created and a workspace it owns or was given. */
   function owned(ref) {
@@ -63,7 +72,9 @@ export function createContainerEnvironment({ dataDir, readSettings, detect = det
       throw new Error("This card's container ref is unreadable.");
     }
     if (ref.worktree) worktrees.owned(ref.worktree);
-    if (ref.mode === "copy" && !resolve(ref.workspace).startsWith(worktreesRoot + sep)) throw new Error("This container's workspace does not belong to the plugin.");
+    if (ref.mode === "copy") {
+      try { ownedWorktreeFolder(worktreesRoot, ref.workspace); } catch { throw new Error("This container's workspace does not belong to the plugin."); }
+    }
     return ref;
   }
 
@@ -158,12 +169,13 @@ export function createContainerEnvironment({ dataDir, readSettings, detect = det
 
   return {
     async prepare(params) {
-      const task = doPrepare(params);
-      pending.set(params.sessionId, task);
+      // Held before the first await: a second start of the same card never runs beside the first.
+      if (preparing.has(params.sessionId)) return { refuse: { reason: "This card's container is already being prepared." } };
+      preparing.add(params.sessionId);
       try {
-        return await task;
+        return await exclusive(params.sessionId, () => doPrepare(params));
       } finally {
-        if (pending.get(params.sessionId) === task) pending.delete(params.sessionId);
+        preparing.delete(params.sessionId);
       }
     },
 
@@ -201,10 +213,11 @@ export function createContainerEnvironment({ dataDir, readSettings, detect = det
 
     async release({ sessionId, ref, keepData }) {
       const r = owned(ref);
-      await pending.get(sessionId)?.catch(() => undefined);
-      await removeCardContainers(r.engine, sessionId);
-      if (!keepData && r.worktree) await worktrees.release({ ref: r.worktree, keepData: false });
-      return {};
+      return exclusive(sessionId, async () => {
+        await removeCardContainers(r.engine, sessionId);
+        if (!keepData && r.worktree) await worktrees.release({ ref: r.worktree, keepData: false });
+        return {};
+      });
     },
 
     describe({ ref }) {

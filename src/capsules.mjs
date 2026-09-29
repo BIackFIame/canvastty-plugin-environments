@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdir, rm, rename, writeFile } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import {
   CollectionRefusal, SNAPSHOT, budgetFrom, collectionBranchName, freeBranch, git, inspect, localRepository, localTransport, pathspecs, refusal, refuseCredentials
 } from "./collect.mjs";
@@ -21,6 +21,7 @@ import { normalizeContainerSettings } from "./containerSettings.mjs";
 import {
   attachEngine, containerUser, createArgs, detectLocalEngine, markerName, parseImage, recipe, runEngine, verifyInspection
 } from "./engine.mjs";
+import { ownedWorktreeFolder, registeredWorktree } from "./worktree.mjs";
 
 const MAX_RECORDS = 50;
 const LOG_TAIL = 4_000;
@@ -66,7 +67,12 @@ export function createCapsules({ pluginId, dataDir, readSettings, setBadge = asy
     const folder = resolve(String(environment.kind === "worktree" ? ref.dir : ref.workspace));
     if (environment.kind === "worktree" || ref.mode === "copy") {
       const owned = environment.kind === "worktree" ? ref : ref.worktree ?? {};
-      if (!folder.startsWith(worktreesRoot + sep) || typeof owned.repo !== "string") throw new CollectionRefusal("This card's folder does not belong to the plugin.");
+      try {
+        if (ownedWorktreeFolder(worktreesRoot, folder) !== folder || typeof owned.repo !== "string") throw new Error("not ours");
+        await registeredWorktree(owned.repo, folder);
+      } catch {
+        throw new CollectionRefusal("This card's folder does not belong to the plugin.");
+      }
       return { folder, repository: await localRepository(owned.repo), base: COMMIT.test(String(owned.base)) ? owned.base : null };
     }
     return { folder, repository: await localRepository(folder), base: null };
@@ -165,11 +171,18 @@ export function createCapsules({ pluginId, dataDir, readSettings, setBadge = asy
     async run(session, { waitMs = 12_000, forToast = false } = {}) {
       if (running.has(session.id)) {
         await waitFor(running.get(session.id), waitMs);
-        return answer(latest(session.id), forToast);
+        const last = latest(session.id);
+        return last ? answer(last, forToast) : { ok: false, text: "The check of this card could not start; run it again." };
       }
-      const settings = normalizeContainerSettings(await readSettings());
-      if (!settings.checkCommand.trim()) return { ok: false, text: "No check command is set: add one in the plugin's Settings (Containers → Check command), for example `npm test`." };
-      if (!settings.image) return { ok: false, text: "No container image is set: choose one in the plugin's Settings (an existing image with python3 and what the check needs)." };
+      // The card's place is taken before the first await: a second run waits for this one instead of starting a check
+      // of its own, and only this run's own entry is ever removed.
+      let finished;
+      const current = new Promise((done) => { finished = done; });
+      running.set(session.id, current);
+      const settle = () => { if (running.get(session.id) === current) running.delete(session.id); finished(); };
+      const settings = normalizeContainerSettings(await readSettings().catch((error) => { settle(); throw error; }));
+      if (!settings.checkCommand.trim()) { settle(); return { ok: false, text: "No check command is set: add one in the plugin's Settings (Containers → Check command), for example `npm test`." }; }
+      if (!settings.image) { settle(); return { ok: false, text: "No container image is set: choose one in the plugin's Settings (an existing image with python3 and what the check needs)." }; }
       const budget = budgetFrom(snapshotTimeoutMs);
       let record;
       try {
@@ -192,13 +205,13 @@ export function createCapsules({ pluginId, dataDir, readSettings, setBadge = asy
           await git(old.repository, ["update-ref", "-d", `refs/canvastty/capsules/${old.id}`]).catch(() => undefined);
         }
         await setBadge(session.id, { text: "checking…", tone: "neutral", tooltip: `${settings.checkCommand.slice(0, 80)} in capsule ${record.id.slice(0, 8)}` }).catch(() => undefined);
-        const task = execute(record, engine, settings).finally(() => running.delete(session.id));
-        running.set(session.id, task);
+        void execute(record, engine, settings).catch(() => undefined).finally(settle);
       } catch (error) {
+        settle();
         const text = error instanceof CollectionRefusal ? `Nothing was checked: ${error.message}` : `The check could not start: ${error.message}`;
         return { ok: false, text };
       }
-      await waitFor(running.get(session.id), waitMs);
+      await waitFor(current, waitMs);
       return answer(record, forToast);
     },
 

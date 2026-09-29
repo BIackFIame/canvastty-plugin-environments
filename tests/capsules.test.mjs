@@ -101,3 +101,21 @@ test("settings, sources and restarts: no command, remote cards, a bootstrap refu
   assert.match((await restarted.result(session)).text, /was interrupted/);
   assert.ok(existsSync(join(records, file)));
 });
+
+test("two runs of one card at the same time start one check; the second reports it", async (t) => {
+  const { dataDir, session } = await setup(t);
+  const fake = fakeEngine();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const capsules = createCapsules({ pluginId: PLUGIN, dataDir, readSettings: async () => { await gate; return { image: "img:1", checkCommand: "echo ONCE" }; },
+    detect: fake.detect, run: fake.run, attach: fake.attach, setBadge: async () => undefined });
+  const first = capsules.run(session);
+  const second = capsules.run(session);
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(fake.calls.filter((call) => call === "container create").length, 1);
+  assert.match(a.text, /Checks passed/);
+  assert.match(b.text, /Checks passed/);
+  assert.match((await capsules.run(session)).text, /Checks passed/, "a later run starts a new check");
+  assert.equal(fake.calls.filter((call) => call === "container create").length, 2);
+});

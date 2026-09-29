@@ -197,8 +197,20 @@ function splitCollected(stdout) {
   const newline = stdout.indexOf(10);
   const length = newline > 0 ? Number(stdout.subarray(0, newline).toString("ascii")) : NaN;
   if (!Number.isSafeInteger(length) || length < 0 || newline + 1 + length > stdout.length) throw new Error("The agent's changes arrived incomplete.");
-  const paths = stdout.subarray(newline + 1, newline + 1 + length).toString("utf8").split("\0").filter(Boolean);
+  const paths = pathNames(stdout.subarray(newline + 1, newline + 1 + length)).split("\0").filter(Boolean);
   return { paths, rest: stdout.subarray(newline + 1 + length) };
+}
+
+/**
+ * NUL-separated file names as text. A name that is not UTF-8 is refused: its pathspec (and its credential check)
+ * would be made from a changed text that no longer matches the file.
+ */
+function pathNames(bytes) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new CollectionRefusal("A changed file's name is not valid UTF-8; rename it, then try again.");
+  }
 }
 
 /** Pathspecs for the commit: everything, except the credential files among the paths it would change (and a
@@ -213,12 +225,11 @@ export async function inspect(transport, folder, budget) {
   const run = await transport(INSPECT, [folder], Buffer.alloc(0), budget());
   if (run.code !== 0) throw refusal(run, "Reading the agent's folder");
   if (run.stdout.length > MAX_INSPECT_BYTES) throw new CollectionRefusal("The agent's folder has too many changed files to collect.");
-  const text = run.stdout.toString("utf8");
-  const separator = text.indexOf("\n--\n");
+  const separator = run.stdout.indexOf("\n--\n");
   if (separator < 0) throw new Error("Reading the agent's folder returned no commit list.");
-  const ancestors = text.slice(0, separator).split("\n").filter((line) => COMMIT.test(line));
+  const ancestors = run.stdout.subarray(0, separator).toString("utf8").split("\n").filter((line) => COMMIT.test(line));
   if (!ancestors.length) throw new Error("Reading the agent's folder returned no commit list.");
-  return { ancestors, changed: text.slice(separator + 4).split("\0").filter(Boolean) };
+  return { ancestors, changed: pathNames(run.stdout.subarray(separator + 4)).split("\0").filter(Boolean) };
 }
 
 async function summary(repository, base, tip, budget) {

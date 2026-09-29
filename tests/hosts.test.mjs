@@ -71,6 +71,9 @@ test("the remote line: a terminal gets the server's login shell, an agent its CL
   });
   assert.equal(line, `cd '/srv/project' && exec "\${SHELL:-/bin/sh}" -lc 'exec claude '\\''--dangerously-skip-permissions'\\'' '\\''--resume'\\'' '\\''5f1c2a90'\\'''`);
   assert.deepEqual(remoteArgs(["--flag=/Users/me/x", "--keep", "value"], ["/Users/me"]), ["--keep", "value"]);
+  // A switch before a left-out argument is not its flag: only the value flags go with their value.
+  assert.deepEqual(remoteArgs(["--strict-mcp-config", "--settings=/Users/me/x.json", "--verbose", "/Users/me/file", "--model", "m"], ["/Users/me"]),
+    ["--strict-mcp-config", "--verbose", "--model", "m"]);
   assert.throws(() => remoteCommandLine({ provider: "claude", remoteFolder: "/srv", command: "/x/-evil" }), /cannot be started/u);
   assert.throws(() => remoteCommandLine({ provider: "claude", remoteFolder: "/srv", command: "claude;id" }), /cannot be started/u);
   assert.throws(() => remoteCommandLine({ provider: "terminal", remoteFolder: "srv" }), /cannot be used/u);

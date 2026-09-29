@@ -111,7 +111,7 @@
     render();
   }
   function render() {
-    list.replaceChildren(...hosts.map((entry, index) => {
+    list.replaceChildren(...hosts.map((entry) => {
       const item = document.createElement("li");
       const name = document.createElement("strong");
       name.textContent = entry.label;
@@ -135,8 +135,13 @@
       remove.type = "button";
       remove.textContent = "Remove";
       remove.addEventListener("click", async () => {
-        hosts = hosts.filter((_, other) => other !== index);
-        await host.storage.set("hosts", hosts);
+        const next = hosts.filter((other) => other.label.toLowerCase() !== entry.label.toLowerCase());
+        try {
+          await host.storage.set("hosts", next);
+        } catch (error) {
+          return say(`Not removed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        hosts = next;
         render();
         say(`Removed ${entry.label}.`);
       });
@@ -164,8 +169,10 @@
     };
     const problem = hostInvalidReason(candidate);
     if (problem) return say(`Not saved: ${problem}.`);
-    hosts = [...hosts.filter((entry) => entry !== existing), candidate];
-    await host.storage.set("hosts", hosts);
+    if (!existing && hosts.length >= MAX_HOSTS) return say(`Not saved: at most ${MAX_HOSTS} servers; remove one first.`);
+    const next = [...hosts.filter((entry) => entry !== existing), candidate];
+    await host.storage.set("hosts", next);
+    hosts = next;
     render();
     say(`Saved ${label}.`);
   }

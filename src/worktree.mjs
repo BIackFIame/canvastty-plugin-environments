@@ -3,21 +3,42 @@
 // describes and releases. Grown from CanvasTTY's examples/plugins/env-worktree; the ref also records the commit the
 // worktree started from, which "Collect changes" uses as the base.
 import { execFile } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
 const git = async (cwd, ...args) => (await run("git", ["-C", cwd, ...args], { timeout: 10_000 })).stdout.trim();
+
+/**
+ * A worktree folder of this plugin: a direct child of `root` that, when it exists, is a real folder (no link, not
+ * reached through one). A lexical prefix alone would let a link placed inside the data folder point anywhere.
+ */
+export function ownedWorktreeFolder(root, value) {
+  const dir = typeof value === "string" ? resolve(value) : "";
+  const refuse = () => { throw new Error("This worktree does not belong to the plugin."); };
+  if (!dir || dirname(dir) !== root) refuse();
+  let info;
+  try { info = lstatSync(dir); } catch (error) { if (error.code === "ENOENT") return dir; throw error; }
+  if (!info.isDirectory() || info.isSymbolicLink() || realpathSync(dir) !== join(realpathSync(root), basename(dir))) refuse();
+  return dir;
+}
+
+/** Throws unless `dir` is a worktree git lists for `repo` (the repository the ref names), checked by real paths. */
+export async function registeredWorktree(repo, dir) {
+  const listing = await git(repo, "worktree", "list", "--porcelain", "-z").catch(() => "");
+  const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
+  const wanted = real(dir);
+  const listed = listing.split("\0").filter((line) => line.startsWith("worktree ")).map((line) => real(line.slice("worktree ".length)));
+  if (!listed.includes(wanted)) throw new Error("This worktree is not one of its repository's worktrees.");
+}
 
 export function createWorktreeEnvironment({ dataDir }) {
   const root = resolve(dataDir, "worktrees");
 
   /** Only folders this plugin created are ever touched, whatever a saved ref says. */
   function owned(ref) {
-    const dir = typeof ref?.dir === "string" ? resolve(ref.dir) : "";
-    if (!dir.startsWith(root + sep)) throw new Error("This worktree does not belong to the plugin.");
-    return { ...ref, dir };
+    return { ...ref, dir: ownedWorktreeFolder(root, ref?.dir) };
   }
 
   return {
@@ -60,6 +81,8 @@ export function createWorktreeEnvironment({ dataDir }) {
     async release({ ref, keepData }) {
       if (keepData) return {};
       const { repo, dir, branch, createdBranch } = owned(ref);
+      if (typeof repo !== "string") throw new Error("This worktree does not belong to the plugin.");
+      await registeredWorktree(repo, dir);
       await git(repo, "worktree", "remove", "--force", dir);
       if (createdBranch) await git(repo, "branch", "-D", branch).catch(() => undefined);
       return {};
