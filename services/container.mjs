@@ -563,6 +563,7 @@ function trimSlashes(path) {
 import { realpathSync } from "node:fs";
 import { homedir as homedir2, tmpdir } from "node:os";
 import { dirname } from "node:path";
+var REMOTE_KEEPS_NOTE = "normal only, no CanvasTTY hooks or base protection here";
 function localRootsFor(dataDir2) {
   return [...new Set([
     homedir2(),
@@ -907,7 +908,7 @@ function createContainerEnvironment({ dataDir: dataDir2, readSettings: readSetti
       const r = owned(ref);
       return {
         label: `container ${r.image}`.slice(0, 80),
-        detail: `${r.engine.kind} ${r.name.slice(0, 18)}\u2026 \xB7 /workspace = ${r.mode === "copy" ? "copy" : "project"} ${r.workspace} \xB7 network ${r.network}`
+        detail: `${REMOTE_KEEPS_NOTE} \xB7 ${r.engine.kind} ${r.name.slice(0, 18)}\u2026 \xB7 /workspace = ${r.mode === "copy" ? "copy" : "project"} ${r.workspace} \xB7 network ${r.network}`
       };
     },
     owned

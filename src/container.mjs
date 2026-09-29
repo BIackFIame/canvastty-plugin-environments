@@ -19,7 +19,7 @@ import {
   SESSION_LABEL, attachEngine, containerUser, createArgs, detectLocalEngine, execArgs, markerName, parseImage, recipe, runEngine, verifyInspection
 } from "./engine.mjs";
 import { remoteArgs } from "./hosts.mjs";
-import { localRootsFor } from "./sshHost.mjs";
+import { REMOTE_KEEPS_NOTE, localRootsFor } from "./sshHost.mjs";
 import { createWorktreeEnvironment, ownedWorktreeFolder } from "./worktree.mjs";
 
 const PREPARE_BUDGET_MS = 12_500; // CanvasTTY waits 15 s for prepare
@@ -223,7 +223,7 @@ export function createContainerEnvironment({ dataDir, readSettings, detect = det
     describe({ ref }) {
       const r = owned(ref);
       return { label: `container ${r.image}`.slice(0, 80),
-        detail: `${r.engine.kind} ${r.name.slice(0, 18)}… · /workspace = ${r.mode === "copy" ? "copy" : "project"} ${r.workspace} · network ${r.network}` };
+        detail: `${REMOTE_KEEPS_NOTE} · ${r.engine.kind} ${r.name.slice(0, 18)}… · /workspace = ${r.mode === "copy" ? "copy" : "project"} ${r.workspace} · network ${r.network}` };
     },
 
     owned

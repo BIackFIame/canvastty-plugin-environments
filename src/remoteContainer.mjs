@@ -11,7 +11,7 @@ import { sshTransport } from "./collect.mjs";
 import { imageValid, normalizeContainerSettings } from "./containerSettings.mjs";
 import { SESSION_LABEL, containerUser, createArgs, execArgs, markerName, parseEngineInfo, parseImage, recipe, verifyInspection } from "./engine.mjs";
 import { chooseHost, hostSnapshot, normalizeHosts, remoteArgs, remoteFolderFor, shellQuote, sshLaunchArgs } from "./hosts.mjs";
-import { localRootsFor } from "./sshHost.mjs";
+import { REMOTE_KEEPS_NOTE, localRootsFor } from "./sshHost.mjs";
 
 const PREPARE_BUDGET_MS = 12_500;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
@@ -233,7 +233,7 @@ export function createRemoteContainerEnvironment({ dataDir, readSettings, readHo
     describe({ ref }) {
       const r = owned(ref);
       return { label: `container ${r.image} on ${r.host.label}`.slice(0, 80),
-        detail: `${r.engine} ${r.name.slice(0, 18)}… on ${r.host.sshHost} · /workspace = ${r.mode === "copy" ? "copy" : "project"} ${r.workspace} · network ${r.network}` };
+        detail: `${REMOTE_KEEPS_NOTE} · ${r.engine} ${r.name.slice(0, 18)}… on ${r.host.sshHost} · /workspace = ${r.mode === "copy" ? "copy" : "project"} ${r.workspace} · network ${r.network}` };
     },
 
     owned

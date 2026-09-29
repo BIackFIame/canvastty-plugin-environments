@@ -37,6 +37,12 @@ carries the size and SHA-256 of every file.
 
 - Agent cards on a server run the same CLI by name from the server's login shell, without CanvasTTY's local bridges
   (status hooks, browser and orchestration tools): arguments that point at files on this computer are left out.
+- What each kind keeps of CanvasTTY's protection (manifest `keeps`): a worktree passes the launch on unchanged
+  (`launch`), so every profile works there and CanvasTTY's isolation layer applies with the worktree as the project.
+  Server and container cards do not (their JSON settings, hooks and local bridges are left out), so CanvasTTY allows only
+  the normal profile there and the card says that its hooks and base protection do not reach the agent; they declare
+  `isolated` (this computer's isolation layer does not apply), and containers also `confines` (one bind mount of the
+  project or its copy).
 - Collecting must finish within CanvasTTY's 15 s budget for a tool call or card action. A capsule check keeps running
   after that; its badge shows the result and *Show check result* the log.
 - Agent cards in a container need the agent's CLI in the image and *Allow network*; on a server, keys are not forwarded.

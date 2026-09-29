@@ -660,6 +660,7 @@ import { realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname } from "node:path";
 var HOSTS_KEY = "hosts";
+var REMOTE_KEEPS_NOTE = "normal only, no CanvasTTY hooks or base protection here";
 function localRootsFor(dataDir) {
   return [...new Set([
     homedir(),
@@ -928,7 +929,7 @@ function createRemoteContainerEnvironment({ dataDir, readSettings, readHosts, tr
       const r = owned(ref);
       return {
         label: `container ${r.image} on ${r.host.label}`.slice(0, 80),
-        detail: `${r.engine} ${r.name.slice(0, 18)}\u2026 on ${r.host.sshHost} \xB7 /workspace = ${r.mode === "copy" ? "copy" : "project"} ${r.workspace} \xB7 network ${r.network}`
+        detail: `${REMOTE_KEEPS_NOTE} \xB7 ${r.engine} ${r.name.slice(0, 18)}\u2026 on ${r.host.sshHost} \xB7 /workspace = ${r.mode === "copy" ? "copy" : "project"} ${r.workspace} \xB7 network ${r.network}`
       };
     },
     owned

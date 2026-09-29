@@ -339,10 +339,11 @@ function createSshHostEnvironment({ dataDir, readHosts: readHosts2, ssh = "ssh",
     describe({ ref }) {
       const { host: host2, remoteFolder } = refOf(ref);
       const destination = `${host2.sshUser ? `${host2.sshUser}@` : ""}${host2.sshHost}${host2.sshPort ? `:${host2.sshPort}` : ""}`;
-      return { label: `ssh ${host2.label}`, detail: `${destination} ${remoteFolder}` };
+      return { label: `ssh ${host2.label}`, detail: `${REMOTE_KEEPS_NOTE} \xB7 ${destination} ${remoteFolder}` };
     }
   };
 }
+var REMOTE_KEEPS_NOTE = "normal only, no CanvasTTY hooks or base protection here";
 function localRootsFor(dataDir) {
   return [...new Set([
     homedir(),

@@ -76,10 +76,19 @@ export function createSshHostEnvironment({ dataDir, readHosts, ssh = "ssh", chec
     describe({ ref }) {
       const { host, remoteFolder } = refOf(ref);
       const destination = `${host.sshUser ? `${host.sshUser}@` : ""}${host.sshHost}${host.sshPort ? `:${host.sshPort}` : ""}`;
-      return { label: `ssh ${host.label}`, detail: `${destination} ${remoteFolder}` };
+      return { label: `ssh ${host.label}`, detail: `${REMOTE_KEEPS_NOTE} · ${destination} ${remoteFolder}` };
     }
   };
 }
+
+/**
+ * What a card on a server or in a container does not keep (the manifest declares `keeps` without `launch`): the
+ * launch's JSON settings and local bridges are left out (see hosts.mjs `remoteArgs`), so CanvasTTY's hooks, base
+ * protection and a profile's per-run settings cannot reach the agent there, and only the normal profile runs. The
+ * environment's own boundary applies instead of this computer's isolation layer (the core says so on the card). It
+ * leads the tooltip, which the core cuts at 240 characters.
+ */
+export const REMOTE_KEEPS_NOTE = "normal only, no CanvasTTY hooks or base protection here";
 
 /** Folders that exist only on this computer: arguments naming them are not passed to a remote or container agent. */
 export function localRootsFor(dataDir) {

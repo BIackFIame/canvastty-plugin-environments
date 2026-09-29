@@ -66,6 +66,20 @@ test("the manifest's coreFiles and module files match the package bytes (what th
   }
 });
 
+test("each environment kind declares honestly what of CanvasTTY's protection it keeps", () => {
+  const manifest = JSON.parse(readFileSync(join(root, "canvastty.plugin.json"), "utf8"));
+  const keeps = Object.fromEntries(manifest.services.flatMap((service) => service.environments ?? []).map((kind) => [kind.kind, kind.keeps]));
+  assert.deepEqual(keeps, {
+    // Same program, arguments and variables in another folder: the launch reaches the agent; the layer still applies.
+    worktree: { launch: true },
+    // Remote and container launches leave out JSON settings and local bridges (remoteArgs), so no launch: normal only.
+    "ssh-host": { isolated: true },
+    // One non-recursive bind mount of the project (or its copy) at /workspace, checked after create and from inside.
+    container: { isolated: true, confines: true },
+    "remote-container": { isolated: true, confines: true }
+  });
+});
+
 test("the manifest passes CanvasTTY's own validator (when CANVASTTY_REPO points at a checkout)", { skip: !process.env.CANVASTTY_REPO }, async () => {
   const { validatePluginManifest } = await import(join(process.env.CANVASTTY_REPO, "src/main/services/PluginManager.ts"));
   const manifest = validatePluginManifest(JSON.parse(readFileSync(join(root, "canvastty.plugin.json"), "utf8")));
@@ -92,7 +106,7 @@ test("ssh-host service: hosts from plugin storage, prepare checks the folder, wr
   assert.deepEqual(wrapped.args.slice(-3), ["--", "root@box", `cd '${remote}' && exec "\${SHELL:-/bin/sh}" -l`]);
   assert.equal(wrapped.args[0], "-tt");
   assert.deepEqual(await service.request("canvastty.environment.resume", { ref: prepared.ref }), { ok: true });
-  assert.deepEqual(await service.request("canvastty.environment.describe", { ref: prepared.ref }), { label: "ssh Box", detail: `root@box ${remote}` });
+  assert.deepEqual(await service.request("canvastty.environment.describe", { ref: prepared.ref }), { label: "ssh Box", detail: `normal only, no CanvasTTY hooks or base protection here · root@box ${remote}` });
   assert.deepEqual(await service.request("canvastty.environment.release", { ref: prepared.ref, keepData: false }), {});
   assert.ok(existsSync(remote), "release never deletes on the server");
   const stopped = await service.request("canvastty.environment.resume", { ref: { ...prepared.ref, remoteFolder: join(remote, "gone") } });

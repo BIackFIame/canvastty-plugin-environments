@@ -12,13 +12,13 @@
   "coreFiles": [
     {
       "path": "README.md",
-      "bytes": 6232,
-      "sha256": "67d93f7257050d4909c920ab89e608aa3188f3e43fc75a482f14beb5c0f28e9b"
+      "bytes": 6840,
+      "sha256": "a3ca4f7cf59afc813bfe68385cd590221e24f9876df55bf6847af08d16410f77"
     },
     {
       "path": "README.ru.md",
-      "bytes": 9480,
-      "sha256": "3448a3eced233322a133ba945b576d844b248d112586126fdb2959006b03b8b1"
+      "bytes": 10447,
+      "sha256": "c4ad1db849d126e7de22b13cf6d21bc389b338ba3fb35b85edb1fbc901b61f41"
     },
     {
       "path": "settings/hosts.html",
@@ -65,8 +65,8 @@
       "files": [
         {
           "path": "services/ssh-host.mjs",
-          "bytes": 17947,
-          "sha256": "93d0bf47a1ef5eb769016875b4a1feb06a758096d23c98ad3a39e11742a72ce4"
+          "bytes": 18056,
+          "sha256": "997507fe267d26de1efe34fad9d1b31970cae3666a9a415cfb7076210da9a55a"
         }
       ]
     },
@@ -82,8 +82,8 @@
       "files": [
         {
           "path": "services/container.mjs",
-          "bytes": 46330,
-          "sha256": "70f8a8a25625ec663612a3c50431d1f893279a0458afda3c285e092804628705"
+          "bytes": 46439,
+          "sha256": "2297098277522d5e5f992bc3cb6f9bda11e76c41cf4135262e39615651411aea"
         }
       ]
     },
@@ -99,8 +99,8 @@
       "files": [
         {
           "path": "services/remote-container.mjs",
-          "bytes": 47652,
-          "sha256": "13fddff52bbe9f07e91694cdd09874768849725e1a10458f3d18efbbed600726"
+          "bytes": 47761,
+          "sha256": "697c80e6f8382cc39b9c15aadc787901e788292a5407a3c38eff10f06ca51dad"
         }
       ]
     },
@@ -144,7 +144,10 @@
               "default": "",
               "maxLength": 80
             }
-          ]
+          ],
+          "keeps": {
+            "launch": true
+          }
         }
       ]
     },
@@ -167,7 +170,10 @@
               "default": "",
               "maxLength": 40
             }
-          ]
+          ],
+          "keeps": {
+            "isolated": true
+          }
         }
       ]
     },
@@ -212,7 +218,11 @@
               "default": "",
               "maxLength": 200
             }
-          ]
+          ],
+          "keeps": {
+            "isolated": true,
+            "confines": true
+          }
         }
       ]
     },
@@ -264,7 +274,11 @@
               "default": "",
               "maxLength": 200
             }
-          ]
+          ],
+          "keeps": {
+            "isolated": true,
+            "confines": true
+          }
         }
       ]
     },
