@@ -256,3 +256,33 @@ function pythonAvailable() {
     return false;
   }
 }
+
+test("remote container: a saved ref cannot point the release at another repository, folder or branch", async (t) => {
+  const dataDir = await temp(t, "data");
+  const released = [];
+  const transportFor = () => async (script, args) => {
+    if (script === RELEASE) released.push(args);
+    return { code: 0, stdout: Buffer.from(""), stderr: "", timedOut: false };
+  };
+  const env = createRemoteContainerEnvironment({ dataDir, readSettings: async () => ({}), readHosts: async () => [], transportFor });
+  const ref = { v: 1, host: { label: "Box", sshHost: "box" }, engine: "podman", name: `canvastty-${SID}`, token: SID, containerId: "c".repeat(64), mode: "copy",
+    top: "/srv/site", workspace: "/srv/.canvastty-work/site-0a1b2c3d", branch: "canvastty/0a1b2c3d", sub: "" };
+  const tampered = [
+    { top: "/srv/other-repo" },                                                      // another repository
+    { top: "/srv/other-repo", workspace: "/tmp/.canvastty-work/x", branch: "main" }, // the old substring check passed this
+    { branch: "main" },                                                              // another branch
+    { workspace: "/srv/.canvastty-work/site-0a1b2c3d/deeper" },
+    { top: undefined },
+    { top: "/srv/./site" },
+    { workspace: "/srv/.canvastty-work/site-ffffffff", branch: "canvastty/ffffffff" } // another card's copy
+  ];
+  for (const patch of tampered) {
+    await assert.rejects(env.release({ sessionId: SID, ref: { ...ref, ...patch }, keepData: false }), /does not belong/u, JSON.stringify(patch));
+  }
+  assert.deepEqual(released, [], "nothing ran on the server");
+  await env.release({ sessionId: SID, ref, keepData: false });
+  assert.deepEqual(released.at(-1).slice(3), ["copy", "/srv/site", "/srv/.canvastty-work/site-0a1b2c3d", "canvastty/0a1b2c3d"]);
+  assert.match(RELEASE, /case "\$7" in canvastty\/\*\)/u, "the server script deletes only the plugin's own branches");
+  // A project-folder ref touches no git and needs no copy fields.
+  await env.release({ sessionId: SID, ref: { ...ref, mode: "project", top: "", workspace: "/srv/site", branch: undefined }, keepData: false });
+});

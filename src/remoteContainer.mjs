@@ -68,7 +68,9 @@ export const RELEASE = String.raw`set -u
 ids=$("$1" container ls --all --quiet --no-trunc --filter "label=${SESSION_LABEL}=$2" 2>/dev/null)
 [ -z "$ids" ] || "$1" container rm --force $ids >/dev/null 2>&1 || { echo 'CTTY_ERR remove' >&2; exit 11; }
 if [ "$3" = 0 ] && [ "$4" = copy ]; then
-  git -C "$5" worktree remove --force "$6" 2>/dev/null; git -C "$5" branch -D "$7" >/dev/null 2>&1; rmdir -- "$(dirname -- "$6")" 2>/dev/null
+  git -C "$5" worktree remove --force "$6" 2>/dev/null
+  case "$7" in canvastty/*) git -C "$5" branch -D "$7" >/dev/null 2>&1 ;; esac
+  rmdir -- "$(dirname -- "$6")" 2>/dev/null
 fi
 exit 0
 `;
@@ -116,13 +118,28 @@ export function createRemoteContainerEnvironment({ dataDir, readSettings, readHo
     throw new Error(code && REASONS[code] ? `${REASONS[code]}${detail ? ` (${detail})` : ""}` : `${what} on ${host.label} failed${detail ? `: ${detail}` : ""}`);
   }
 
-  function owned(ref) {
+  /**
+   * Only refs this plugin wrote. A copy's workspace, clone and branch are the ones prepare derives from each other
+   * (`<parent of top>/.canvastty-work/<top name>-<id>` on branch `canvastty/<id>`, the id from the card's session when
+   * it is known), so a saved ref cannot point the release's worktree removal and `branch -D` at another repository
+   * or branch.
+   */
+  function owned(ref, sessionId) {
     if (!ref || typeof ref !== "object" || !ref.host || !["docker", "podman"].includes(ref.engine) || !/^canvastty-[0-9a-f-]{36}$/u.test(String(ref.name))
       || !UUID.test(String(ref.token)) || !posix.isAbsolute(String(ref.workspace)) || String(ref.workspace).split("/").includes("..")
-      || String(ref.sub ?? "").split("/").includes("..") || !/^[0-9a-f]{64}$/u.test(String(ref.containerId))) {
+      || String(ref.sub ?? "").split("/").includes("..") || !/^[0-9a-f]{64}$/u.test(String(ref.containerId)) || !["copy", "project"].includes(ref.mode)) {
       throw new Error("This card's container ref is unreadable.");
     }
-    if (ref.mode === "copy" && !ref.workspace.includes("/.canvastty-work/")) throw new Error("This container's workspace does not belong to the plugin.");
+    if (ref.mode === "copy") {
+      const top = typeof ref.top === "string" ? ref.top : "";
+      const prefix = `${posix.dirname(top)}/.canvastty-work/${posix.basename(top)}-`;
+      const id = ref.workspace.startsWith(prefix) ? ref.workspace.slice(prefix.length) : "";
+      if (!posix.isAbsolute(top) || posix.normalize(top) !== top || top.split("/").includes("..") || top === "/"
+        || !id || id.includes("/") || id === "." || ref.branch !== `canvastty/${id}`
+        || (sessionId !== undefined && id !== String(sessionId).slice(0, 8))) {
+        throw new Error("This container's workspace does not belong to the plugin.");
+      }
+    }
     return ref;
   }
 
@@ -205,7 +222,7 @@ export function createRemoteContainerEnvironment({ dataDir, readSettings, readHo
     },
 
     async resume({ sessionId, ref }) {
-      const r = owned(ref);
+      const r = owned(ref, sessionId);
       try {
         await start(r, sessionId, "resume", 9_500);
         return { ok: true };
@@ -223,7 +240,7 @@ export function createRemoteContainerEnvironment({ dataDir, readSettings, readHo
     },
 
     async release({ sessionId, ref, keepData }) {
-      const r = owned(ref);
+      const r = owned(ref, sessionId);
       return exclusive(sessionId, async () => {
         await script(r.host, RELEASE, [r.engine, sessionId, keepData ? "1" : "0", r.mode, r.top || r.workspace, r.workspace, r.branch], 9_500, "Removing the container");
         return {};

@@ -8,7 +8,9 @@ var RPC_LIMITS = Object.freeze({
   hostCalls: 64,
   activeHandlers: 64,
   /** CanvasTTY waits 2 s after canvastty.shutdown before SIGTERM. */
-  drainMs: 1500
+  drainMs: 1500,
+  /** Logs held while the host is not reading, at most. */
+  outboundBytes: 8 * 1048576
 });
 function serve({ methods, notifications = {}, onInitialize, input = process.stdin, output = process.stdout, exit = (code) => process.exit(code), limits = {} }) {
   const limit = { ...RPC_LIMITS, ...limits };
@@ -18,8 +20,61 @@ function serve({ methods, notifications = {}, onInitialize, input = process.stdi
   let stopping = false;
   let hostGone = false;
   let onIdle = null;
-  const send = (message) => output.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}
-`);
+  const queue = [];
+  let held = 0;
+  let blocked = false;
+  let dropped = 0;
+  let onFlushed = null;
+  const write = (text) => {
+    if (output.write(text) === false && typeof output.once === "function") {
+      blocked = true;
+      output.once("drain", flush);
+    }
+  };
+  function flush() {
+    blocked = false;
+    while (queue.length && !blocked) {
+      const frame = queue.shift();
+      if (frame.droppable) held -= frame.bytes;
+      write(frame.text);
+    }
+    if (blocked) return;
+    if (dropped) {
+      const count = dropped;
+      dropped = 0;
+      send({ method: "log", params: { level: "warn", message: `Dropped ${count} events or logs while the host was not reading.` } }, true);
+    }
+    if (!blocked && !queue.length) onFlushed?.();
+  }
+  const send = (message, droppable = false) => {
+    const text = `${JSON.stringify({ jsonrpc: "2.0", ...message })}
+`;
+    const bytes = Buffer.byteLength(text);
+    if (bytes > limit.frameBytes && message.method !== "log") return false;
+    if (!blocked) {
+      write(text);
+      return true;
+    }
+    if (droppable) {
+      for (let at = 0; held + bytes > limit.outboundBytes && at < queue.length; ) {
+        const frame = queue[at];
+        if (!frame.droppable) {
+          at++;
+          continue;
+        }
+        held -= frame.bytes;
+        queue.splice(at, 1);
+        dropped++;
+      }
+      if (held + bytes > limit.outboundBytes) {
+        dropped++;
+        return true;
+      }
+      held += bytes;
+    }
+    queue.push({ text, bytes, droppable });
+    return true;
+  };
   const callHost = (method, params) => new Promise((resolve, reject) => {
     if (hostGone) return reject(new Error("The host connection is closed."));
     if (pending.size >= limit.hostCalls) return reject(new Error("Too many host calls in flight."));
@@ -29,9 +84,15 @@ function serve({ methods, notifications = {}, onInitialize, input = process.stdi
       reject(new Error(`The host did not answer ${method} in time.`));
     }, limit.hostCallMs);
     pending.set(id, { resolve, reject, timer });
-    send({ id, method, params });
+    if (!send({ id, method, params })) {
+      clearTimeout(timer);
+      pending.delete(id);
+      reject(new Error(`The ${method} request is larger than the frame limit.`));
+    }
   });
-  const log = (level, message) => send({ method: "log", params: { level, message: String(message).slice(0, 500) } });
+  const log = (level, message) => {
+    send({ method: "log", params: { level, message: String(message).slice(0, 500) } }, true);
+  };
   const context = { callHost, log };
   const errorText = (error) => String(error?.message ?? error);
   const track = (run) => {
@@ -44,10 +105,17 @@ function serve({ methods, notifications = {}, onInitialize, input = process.stdi
   const stop = () => {
     if (stopping) return;
     stopping = true;
-    const timer = setTimeout(() => exit(0), limit.drainMs);
-    onIdle = () => {
+    let exited = false;
+    const finish = () => {
+      if (exited) return;
+      exited = true;
       clearTimeout(timer);
       exit(0);
+    };
+    const timer = setTimeout(finish, limit.drainMs);
+    onIdle = () => {
+      if (blocked || queue.length) onFlushed = finish;
+      else finish();
     };
     if (active === 0) onIdle();
   };
@@ -81,7 +149,9 @@ function serve({ methods, notifications = {}, onInitialize, input = process.stdi
         if (!method) throw Object.assign(new Error(`Unknown method: ${message.method}`), { code: -32601 });
         return method(message.params ?? {}, context);
       }).then(
-        (result) => send({ id: message.id, result: result ?? null }),
+        (result) => {
+          if (!send({ id: message.id, result: result ?? null })) send({ id: message.id, error: { code: -32e3, message: "The answer is larger than the frame limit." } });
+        },
         (error) => send({ id: message.id, error: { code: error?.code ?? -32e3, message: errorText(error).slice(0, 400) } })
       );
       return;
@@ -732,7 +802,9 @@ var RELEASE = String.raw`set -u
 ids=$("$1" container ls --all --quiet --no-trunc --filter "label=${SESSION_LABEL}=$2" 2>/dev/null)
 [ -z "$ids" ] || "$1" container rm --force $ids >/dev/null 2>&1 || { echo 'CTTY_ERR remove' >&2; exit 11; }
 if [ "$3" = 0 ] && [ "$4" = copy ]; then
-  git -C "$5" worktree remove --force "$6" 2>/dev/null; git -C "$5" branch -D "$7" >/dev/null 2>&1; rmdir -- "$(dirname -- "$6")" 2>/dev/null
+  git -C "$5" worktree remove --force "$6" 2>/dev/null
+  case "$7" in canvastty/*) git -C "$5" branch -D "$7" >/dev/null 2>&1 ;; esac
+  rmdir -- "$(dirname -- "$6")" 2>/dev/null
 fi
 exit 0
 `;
@@ -783,11 +855,18 @@ function createRemoteContainerEnvironment({ dataDir, readSettings, readHosts, tr
     const detail = run.stderr.replace(/CTTY_ERR [a-z-]+/gu, "").replace(/\s+/gu, " ").trim().slice(0, 240);
     throw new Error(code && REASONS[code] ? `${REASONS[code]}${detail ? ` (${detail})` : ""}` : `${what} on ${host.label} failed${detail ? `: ${detail}` : ""}`);
   }
-  function owned(ref) {
-    if (!ref || typeof ref !== "object" || !ref.host || !["docker", "podman"].includes(ref.engine) || !/^canvastty-[0-9a-f-]{36}$/u.test(String(ref.name)) || !UUID.test(String(ref.token)) || !posix.isAbsolute(String(ref.workspace)) || String(ref.workspace).split("/").includes("..") || String(ref.sub ?? "").split("/").includes("..") || !/^[0-9a-f]{64}$/u.test(String(ref.containerId))) {
+  function owned(ref, sessionId) {
+    if (!ref || typeof ref !== "object" || !ref.host || !["docker", "podman"].includes(ref.engine) || !/^canvastty-[0-9a-f-]{36}$/u.test(String(ref.name)) || !UUID.test(String(ref.token)) || !posix.isAbsolute(String(ref.workspace)) || String(ref.workspace).split("/").includes("..") || String(ref.sub ?? "").split("/").includes("..") || !/^[0-9a-f]{64}$/u.test(String(ref.containerId)) || !["copy", "project"].includes(ref.mode)) {
       throw new Error("This card's container ref is unreadable.");
     }
-    if (ref.mode === "copy" && !ref.workspace.includes("/.canvastty-work/")) throw new Error("This container's workspace does not belong to the plugin.");
+    if (ref.mode === "copy") {
+      const top = typeof ref.top === "string" ? ref.top : "";
+      const prefix = `${posix.dirname(top)}/.canvastty-work/${posix.basename(top)}-`;
+      const id = ref.workspace.startsWith(prefix) ? ref.workspace.slice(prefix.length) : "";
+      if (!posix.isAbsolute(top) || posix.normalize(top) !== top || top.split("/").includes("..") || top === "/" || !id || id.includes("/") || id === "." || ref.branch !== `canvastty/${id}` || sessionId !== void 0 && id !== String(sessionId).slice(0, 8)) {
+        throw new Error("This container's workspace does not belong to the plugin.");
+      }
+    }
     return ref;
   }
   const expectation = (ref, sessionId) => ({
@@ -898,7 +977,7 @@ function createRemoteContainerEnvironment({ dataDir, readSettings, readHosts, tr
       }
     },
     async resume({ sessionId, ref }) {
-      const r = owned(ref);
+      const r = owned(ref, sessionId);
       try {
         await start(r, sessionId, "resume", 9500);
         return { ok: true };
@@ -919,7 +998,7 @@ function createRemoteContainerEnvironment({ dataDir, readSettings, readHosts, tr
       return { command: "ssh", args: sshLaunchArgs(r.host, `exec ${words.map(shellQuote).join(" ")}`) };
     },
     async release({ sessionId, ref, keepData }) {
-      const r = owned(ref);
+      const r = owned(ref, sessionId);
       return exclusive(sessionId, async () => {
         await script(r.host, RELEASE, [r.engine, sessionId, keepData ? "1" : "0", r.mode, r.top || r.workspace, r.workspace, r.branch], 9500, "Removing the container");
         return {};

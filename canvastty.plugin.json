@@ -48,8 +48,8 @@
       "files": [
         {
           "path": "services/worktree.mjs",
-          "bytes": 10574,
-          "sha256": "ffcb4f8954a2ac71b400f777f68443da82ad06f57a17e58f1f8d864717d96756"
+          "bytes": 12989,
+          "sha256": "d92903cd69e39a95433264f5685237540e2a1bbe6b27bb813b9c1d3ee25037d4"
         }
       ]
     },
@@ -65,8 +65,8 @@
       "files": [
         {
           "path": "services/ssh-host.mjs",
-          "bytes": 18056,
-          "sha256": "997507fe267d26de1efe34fad9d1b31970cae3666a9a415cfb7076210da9a55a"
+          "bytes": 20076,
+          "sha256": "cd9fd413f5cabb6c5aab80282fdaec7cb4c7b9f835fd5a75caebba311b7146dd"
         }
       ]
     },
@@ -82,8 +82,8 @@
       "files": [
         {
           "path": "services/container.mjs",
-          "bytes": 46439,
-          "sha256": "2297098277522d5e5f992bc3cb6f9bda11e76c41cf4135262e39615651411aea"
+          "bytes": 48854,
+          "sha256": "b9a141a5ca008e78d8d8b3367c17aac30a7f2f9b00e45e7740e25ce04ee9a53b"
         }
       ]
     },
@@ -99,8 +99,8 @@
       "files": [
         {
           "path": "services/remote-container.mjs",
-          "bytes": 47761,
-          "sha256": "697c80e6f8382cc39b9c15aadc787901e788292a5407a3c38eff10f06ca51dad"
+          "bytes": 50367,
+          "sha256": "ee56c25171d11102db96550ac2fe91466bf25a242b61465ab2c736cfd6df4fd3"
         }
       ]
     },
@@ -118,8 +118,8 @@
       "files": [
         {
           "path": "services/results.mjs",
-          "bytes": 71809,
-          "sha256": "61425f3ea6218bf97cae50dc744bdf056ba17b4a2475ea8c19471f57d3edc2c4"
+          "bytes": 74149,
+          "sha256": "f5e36e96449ce77d5dbf27a85088fccc8a850eeccde096081186565666cf8d70"
         }
       ]
     }

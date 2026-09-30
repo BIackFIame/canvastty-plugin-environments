@@ -142,3 +142,17 @@ test("worktree ownership is by real path and registration: a link, a nested fold
   assert.equal(git(outside, "status", "--porcelain"), "");
   await worktree.release({ ref: prepared.ref, keepData: false });
 });
+
+test("worktree release deletes only the branch git has checked out in the worktree, whatever branch the ref names", async (t) => {
+  const local = await repo(t, "local");
+  const dataDir = await temp(t, "data");
+  const worktree = createWorktreeEnvironment({ dataDir });
+  git(local, "branch", "precious");
+  const first = await worktree.prepare({ sessionId: "aa11bb22-1", cwd: local, options: {} });
+  await worktree.release({ ref: { ...first.ref, branch: "precious", createdBranch: true }, keepData: false });
+  assert.match(git(local, "branch", "--list", "precious"), /precious/u, "a branch the worktree was not on is kept");
+  const second = await worktree.prepare({ sessionId: "cc33dd44-1", cwd: local, options: {} });
+  assert.equal(second.ref.branch, "canvastty/cc33dd44");
+  await worktree.release({ ref: second.ref, keepData: false });
+  assert.equal(git(local, "branch", "--list", "canvastty/cc33dd44"), "", "the worktree's own new branch goes");
+});

@@ -24,13 +24,23 @@ export function ownedWorktreeFolder(root, value) {
   return dir;
 }
 
-/** Throws unless `dir` is a worktree git lists for `repo` (the repository the ref names), checked by real paths. */
+/**
+ * Throws unless `dir` is a worktree git lists for `repo` (the repository the ref names), checked by real paths.
+ * Returns the branch git has checked out there (null when detached), read from git rather than from the ref.
+ */
 export async function registeredWorktree(repo, dir) {
   const listing = await git(repo, "worktree", "list", "--porcelain", "-z").catch(() => "");
   const real = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
   const wanted = real(dir);
-  const listed = listing.split("\0").filter((line) => line.startsWith("worktree ")).map((line) => real(line.slice("worktree ".length)));
-  if (!listed.includes(wanted)) throw new Error("This worktree is not one of its repository's worktrees.");
+  let current = null;
+  const branches = new Map();
+  for (const line of listing.split("\0")) {
+    if (line.startsWith("worktree ")) { current = real(line.slice("worktree ".length)); branches.set(current, null); }
+    else if (current !== null && line.startsWith("branch refs/heads/")) branches.set(current, line.slice("branch refs/heads/".length));
+    else if (!line) current = null;
+  }
+  if (!branches.has(wanted)) throw new Error("This worktree is not one of its repository's worktrees.");
+  return { branch: branches.get(wanted) };
 }
 
 export function createWorktreeEnvironment({ dataDir }) {
@@ -82,9 +92,10 @@ export function createWorktreeEnvironment({ dataDir }) {
       if (keepData) return {};
       const { repo, dir, branch, createdBranch } = owned(ref);
       if (typeof repo !== "string") throw new Error("This worktree does not belong to the plugin.");
-      await registeredWorktree(repo, dir);
+      // Only the branch git has checked out in this worktree is ever deleted, whatever branch the ref names.
+      const listed = await registeredWorktree(repo, dir);
       await git(repo, "worktree", "remove", "--force", dir);
-      if (createdBranch) await git(repo, "branch", "-D", branch).catch(() => undefined);
+      if (createdBranch && typeof branch === "string" && listed.branch === branch) await git(repo, "branch", "-D", branch).catch(() => undefined);
       return {};
     },
 

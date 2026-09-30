@@ -8,7 +8,9 @@ var RPC_LIMITS = Object.freeze({
   hostCalls: 64,
   activeHandlers: 64,
   /** CanvasTTY waits 2 s after canvastty.shutdown before SIGTERM. */
-  drainMs: 1500
+  drainMs: 1500,
+  /** Logs held while the host is not reading, at most. */
+  outboundBytes: 8 * 1048576
 });
 function serve({ methods, notifications = {}, onInitialize, input = process.stdin, output = process.stdout, exit = (code) => process.exit(code), limits = {} }) {
   const limit = { ...RPC_LIMITS, ...limits };
@@ -18,8 +20,61 @@ function serve({ methods, notifications = {}, onInitialize, input = process.stdi
   let stopping = false;
   let hostGone = false;
   let onIdle = null;
-  const send = (message) => output.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}
-`);
+  const queue = [];
+  let held = 0;
+  let blocked = false;
+  let dropped = 0;
+  let onFlushed = null;
+  const write = (text) => {
+    if (output.write(text) === false && typeof output.once === "function") {
+      blocked = true;
+      output.once("drain", flush);
+    }
+  };
+  function flush() {
+    blocked = false;
+    while (queue.length && !blocked) {
+      const frame = queue.shift();
+      if (frame.droppable) held -= frame.bytes;
+      write(frame.text);
+    }
+    if (blocked) return;
+    if (dropped) {
+      const count = dropped;
+      dropped = 0;
+      send({ method: "log", params: { level: "warn", message: `Dropped ${count} events or logs while the host was not reading.` } }, true);
+    }
+    if (!blocked && !queue.length) onFlushed?.();
+  }
+  const send = (message, droppable = false) => {
+    const text = `${JSON.stringify({ jsonrpc: "2.0", ...message })}
+`;
+    const bytes = Buffer.byteLength(text);
+    if (bytes > limit.frameBytes && message.method !== "log") return false;
+    if (!blocked) {
+      write(text);
+      return true;
+    }
+    if (droppable) {
+      for (let at = 0; held + bytes > limit.outboundBytes && at < queue.length; ) {
+        const frame = queue[at];
+        if (!frame.droppable) {
+          at++;
+          continue;
+        }
+        held -= frame.bytes;
+        queue.splice(at, 1);
+        dropped++;
+      }
+      if (held + bytes > limit.outboundBytes) {
+        dropped++;
+        return true;
+      }
+      held += bytes;
+    }
+    queue.push({ text, bytes, droppable });
+    return true;
+  };
   const callHost = (method, params) => new Promise((resolve2, reject) => {
     if (hostGone) return reject(new Error("The host connection is closed."));
     if (pending.size >= limit.hostCalls) return reject(new Error("Too many host calls in flight."));
@@ -29,9 +84,15 @@ function serve({ methods, notifications = {}, onInitialize, input = process.stdi
       reject(new Error(`The host did not answer ${method} in time.`));
     }, limit.hostCallMs);
     pending.set(id, { resolve: resolve2, reject, timer });
-    send({ id, method, params });
+    if (!send({ id, method, params })) {
+      clearTimeout(timer);
+      pending.delete(id);
+      reject(new Error(`The ${method} request is larger than the frame limit.`));
+    }
   });
-  const log = (level, message) => send({ method: "log", params: { level, message: String(message).slice(0, 500) } });
+  const log = (level, message) => {
+    send({ method: "log", params: { level, message: String(message).slice(0, 500) } }, true);
+  };
   const context = { callHost, log };
   const errorText = (error) => String(error?.message ?? error);
   const track = (run2) => {
@@ -44,10 +105,17 @@ function serve({ methods, notifications = {}, onInitialize, input = process.stdi
   const stop = () => {
     if (stopping) return;
     stopping = true;
-    const timer = setTimeout(() => exit(0), limit.drainMs);
-    onIdle = () => {
+    let exited = false;
+    const finish = () => {
+      if (exited) return;
+      exited = true;
       clearTimeout(timer);
       exit(0);
+    };
+    const timer = setTimeout(finish, limit.drainMs);
+    onIdle = () => {
+      if (blocked || queue.length) onFlushed = finish;
+      else finish();
     };
     if (active === 0) onIdle();
   };
@@ -81,7 +149,9 @@ function serve({ methods, notifications = {}, onInitialize, input = process.stdi
         if (!method) throw Object.assign(new Error(`Unknown method: ${message.method}`), { code: -32601 });
         return method(message.params ?? {}, context);
       }).then(
-        (result) => send({ id: message.id, result: result ?? null }),
+        (result) => {
+          if (!send({ id: message.id, result: result ?? null })) send({ id: message.id, error: { code: -32e3, message: "The answer is larger than the frame limit." } });
+        },
         (error) => send({ id: message.id, error: { code: error?.code ?? -32e3, message: errorText(error).slice(0, 400) } })
       );
       return;
@@ -172,8 +242,17 @@ async function registeredWorktree(repo, dir) {
     }
   };
   const wanted = real(dir);
-  const listed = listing.split("\0").filter((line) => line.startsWith("worktree ")).map((line) => real(line.slice("worktree ".length)));
-  if (!listed.includes(wanted)) throw new Error("This worktree is not one of its repository's worktrees.");
+  let current = null;
+  const branches = /* @__PURE__ */ new Map();
+  for (const line of listing.split("\0")) {
+    if (line.startsWith("worktree ")) {
+      current = real(line.slice("worktree ".length));
+      branches.set(current, null);
+    } else if (current !== null && line.startsWith("branch refs/heads/")) branches.set(current, line.slice("branch refs/heads/".length));
+    else if (!line) current = null;
+  }
+  if (!branches.has(wanted)) throw new Error("This worktree is not one of its repository's worktrees.");
+  return { branch: branches.get(wanted) };
 }
 function createWorktreeEnvironment({ dataDir }) {
   const root = resolve(dataDir, "worktrees");
@@ -216,9 +295,9 @@ function createWorktreeEnvironment({ dataDir }) {
       if (keepData) return {};
       const { repo, dir, branch, createdBranch } = owned(ref);
       if (typeof repo !== "string") throw new Error("This worktree does not belong to the plugin.");
-      await registeredWorktree(repo, dir);
+      const listed = await registeredWorktree(repo, dir);
       await git(repo, "worktree", "remove", "--force", dir);
-      if (createdBranch) await git(repo, "branch", "-D", branch).catch(() => void 0);
+      if (createdBranch && typeof branch === "string" && listed.branch === branch) await git(repo, "branch", "-D", branch).catch(() => void 0);
       return {};
     },
     async describe({ ref }) {
